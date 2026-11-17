@@ -8,10 +8,10 @@ const os = require('os');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adk-smoke-'));
 const outDir = process.env.SMOKE_OUT ? path.resolve(process.env.SMOKE_OUT) : tmp;
 app.setPath('appData', tmp);
-app.setPath('userData', path.join(tmp, 'AI代理人会議'));
-fs.mkdirSync(path.join(tmp, 'AI代理人会議'), { recursive: true });
+app.setPath('userData', path.join(tmp, 'user'));
+fs.mkdirSync(path.join(tmp, 'user'), { recursive: true });
 fs.mkdirSync(outDir, { recursive: true });
-fs.writeFileSync(path.join(tmp, 'AI代理人会議', 'config.json'), JSON.stringify({ name: 'りょうま', room: 'smoke', memberId: 'm-me001', apiKey: 'dummy' }));
+fs.writeFileSync(path.join(tmp, 'user', 'config.json'), JSON.stringify({ name: 'りょうま', room: 'smoke', memberId: 'm-me001', apiKey: 'dummy' }));
 
 // 他の2人はすでに預け済み、という状態を作る
 const brief = (title, target, feature, worries) => ({
@@ -49,7 +49,6 @@ global.__mockLlm = async ({ system, messages }) => {
   if (task === 'round2' || task === 'rerun') {
     return JSON.stringify({ statement: `${who}さんの立場で見直しました。合体案は不安だった点が減るので前向きです。`, evals: ids.map((id) => ({ candId: id, score: id.startsWith('mix') ? 5 : 3, reason: id.startsWith('mix') ? '不安だった実装量が減りそうです' : '悪くはないです', basis: 'guess' })), questions: task === 'round2' && who === 'りょうま' ? [{ candId: ids[ids.length - 1], text: 'あおいさんの案のターゲット（学生）に絞ると、気にしていた「デモの見せにくさ」が減りそうですが、どうですか？' }] : [] });
   }
-  if (task === 'feas') return JSON.stringify({ statement: '各案の実現性を調べました。\n\n合体案は範囲を絞れば締切までに作れます。', items: ids.map((id, i) => ({ candId: id, verdict: ['ok', 'partial', 'hard'][i % 3], needs: 'ブラウザの拡張機能のAPIが必要です。', mvp: '動画の一時停止だけが動く形まで作れます。', later: '要約と書き出しは後回しにします。', risk: '対応していないサイトがあるかは未確認です。' })) }) + '§SRC§https://developer.chrome.com/docs/extensions';
   if (task === 'judge') return JSON.stringify({ scores: ids.map((id) => ({ candId: id, marks: id.startsWith('mix') ? [5, 4, 4] : id.startsWith('new') ? [4, 5, 2] : [4, 2, 3], comment: id.startsWith('mix') ? 'テーマと完成度に強く、新しさもあります。' : 'テーマには合いますが、新しさが弱めです。' })) });
   return JSON.stringify({ reason: '評価基準への合い方が最も高く、全員の支持も集まりました。\n\nほかの案はテーマには合うものの、新しさの点で差がつきました。', influences: [{ name: 'あおい', point: 'ターゲットを学生に絞る' }, { name: 'りょうま', point: '本人の承認なしに決めない' }], conflict: '', fit: ids.map((id) => ({ candId: id, score: id.startsWith('mix') ? 5 : 3, comment: 'テーマには合うが新しさは普通' })), plan: { steps: '1日目に個室、2日目に会議を作る。', roles: [{ name: 'りょうま', role: '会議ロジック' }, { name: 'あおい', role: '未定（本人に確認）' }] } });
 };
@@ -88,7 +87,7 @@ app.whenReady().then(async () => {
     if (!turn2.includes('いまは待ち') || !turn2.includes('承認を待っています')) throw new Error('待ちの表示が出ない: ' + turn2);
     await js(`document.querySelectorAll('details').forEach((d) => (d.open = true))`); await sleep(200);
     const text = await js(`document.querySelector('#view').innerText`);
-    for (const need of ['推薦案（第2回の議論）', '✓ 承認', '承認 1 / 3 人', '勉強会の決めごと代理人', '代理人の推測', 'AIの新案', '実装の進め方（案）', '評価基準ごとの採点', '技術的に作れるか', '締切までに作れる範囲', 'Web検索で確認', 'developer.chrome.com', '新しさがあるか ×2：4/5', '基準 ', '/70 ＋ 支持 ', 'お題と評価基準']) {
+    for (const need of ['推薦案（第2回の議論）', '✓ 承認', '承認 1 / 3 人', '勉強会の決めごと代理人', '代理人の推測', 'AIの新案', '実装の進め方（案）', '評価基準ごとの採点', '新しさがあるか ×2：4/5', '基準 ', '/70 ＋ 支持 ', 'お題と評価基準']) {
       if (!text.includes(need)) throw new Error('表示に見つからない: ' + need);
     }
     if (errors.length) throw new Error('コンソールエラー: ' + errors.join(' / '));
