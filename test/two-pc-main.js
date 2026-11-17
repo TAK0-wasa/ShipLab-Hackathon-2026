@@ -1,0 +1,93 @@
+// 2台のPCに見立てた通し確認の、1台分（test/smoke-two-pc.js から起動される）
+// ROLE=leader: 会議を作って招待コードを書き出す / ROLE=member: 招待コードで参加する
+const { app, BrowserWindow } = require('electron');
+const path = require('path');
+const fs = require('fs');
+
+const ROLE = process.env.ROLE;
+const DIR = process.env.TWO_PC_DIR;
+const URL0 = process.env.FAKE_DB_URL;
+const home = path.join(DIR, ROLE);
+app.setPath('appData', home); // 保存先を完全に分ける（別のPCと同じ状態）
+app.setPath('userData', path.join(home, 'user'));
+require('../main.js');
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+app.whenReady().then(async () => {
+  await sleep(1500);
+  const win = BrowserWindow.getAllWindows()[0];
+  const wc = win.webContents;
+  const errors = [];
+  wc.on('console-message', (e) => { if (e.level === 'error' || e.level === 3) errors.push(e.message); });
+  const js = (code) => wc.executeJavaScript(code);
+  const click = (text) => js(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith(${JSON.stringify(text)}) && !b.disabled); if (!b) throw new Error('ボタンなし: ' + ${JSON.stringify(text)}); b.click(); })()`);
+  const type = (sel, text) => js(`(() => { const t = document.querySelector(${JSON.stringify(sel)}); if (!t) throw new Error('入力欄なし: ' + ${JSON.stringify(sel)}); t.value = ${JSON.stringify(text)}; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  const text = (sel) => js(`(document.querySelector(${JSON.stringify(sel)}) || {}).innerText || ''`);
+  const until = async (fn, label, ms) => { for (let i = 0; i < (ms || 60000) / 300; i++) { if (await fn()) return; await sleep(300); } throw new Error(`[${ROLE}] 待っても変わらない: ${label}`); };
+  const idle = () => until(async () => !(await js(`!!document.querySelector('#status .spin') || [...document.querySelectorAll('.bubble')].some(b => b.textContent === '…')`)), '処理中のまま');
+  const shot = async (name) => fs.writeFileSync(path.join(DIR, `${ROLE}-${name}.png`), (await wc.capturePage()).toPNG());
+  const closeOverlay = () => js(`(() => { const o = document.querySelector('#overlay.show'); if (o) { o.className = ''; o.replaceChildren(); } })()`);
+  try {
+    if (ROLE === 'leader') {
+      await click('幹事として始める'); await sleep(300);
+      await type('#c-name', 'りょうま');
+      await type('#c-theme', '発表の役割分担');
+      await type('#c-criteria', '全員が無理なく担当できるか\n発表がうまくいくか ×2');
+      await type('#c-size', '2');
+      await type('#c-surl', URL0);
+      await type('#c-skey', 'fake-key');
+      await js(`document.querySelector('#c-demo').checked = true`);
+      await click('会議を作る'); await sleep(1500);
+      const who = await text('#who');
+      if (!who.includes('共有中')) throw new Error('共有中にならない: ' + who + ' / ' + (await text('#status')));
+      const code = await js(`document.querySelector('#s-invite').value`);
+      fs.writeFileSync(path.join(DIR, 'code.txt'), code);
+      await click('個室'); await sleep(300);
+      for (const msg of ['自分は話す役をやりたい', '人前で話すのは好き。質問に答えるのは不安。', 'なし', 'スライドも作れる。今夜2時間使える']) { await type('#chatInput', msg); await click('送信'); await idle(); }
+      await click('預ける'); await idle();
+      await click('この内容で預ける'); await idle();
+      // メンバーが別のPCから預けるのを待つ → 幹事のアプリが自動で会議を進める
+      await until(async () => { await click('会議室').catch(() => {}); return (await text('#view')).includes('推薦案（第1回の議論）'); }, 'メンバーが預けたあと会議が進まない', 120000);
+      await idle();
+      if (!(await text('#view')).includes('あおい')) throw new Error('メンバーの名前が幹事側に出ていない');
+      await shot('meeting');
+      // メンバーの承認が届くのを待ってから、自分も承認 → 決定
+      await until(async () => (await text('#view')).includes('承認 1 / 2 人'), 'メンバーの承認が届かない', 90000);
+      await click('この案を承認する'); await sleep(1500);
+      await until(async () => (await text('#overlay')).includes('決定'), '決定の表示が出ない', 20000);
+      await shot('decided');
+      await closeOverlay();
+    } else {
+      const code = fs.readFileSync(path.join(DIR, 'code.txt'), 'utf8');
+      await click('メンバーとして参加する'); await sleep(300);
+      await type('#j-name', 'あおい');
+      await type('#j-code', code);
+      await click('参加する'); await sleep(1800);
+      const who = await text('#who');
+      if (!(await text('#switch')).includes('発表の役割分担') || !who.includes('あおい（メンバー）') || !who.includes('共有中')) throw new Error('参加後の表示がおかしい: ' + who + ' / ' + (await text('#status')));
+      const topic = await js(`(async () => { document.querySelectorAll('nav button')[1].click(); await new Promise(r => setTimeout(r, 400)); document.querySelectorAll('details').forEach((d) => (d.open = true)); await new Promise(r => setTimeout(r, 200)); return document.querySelector('#view').innerText; })()`);
+      if (!topic.includes('発表がうまくいくか ×2') || !topic.includes('幹事が設定します')) throw new Error('幹事が入れた評価基準がメンバーに見えない: ' + topic.slice(0, 200));
+      await click('個室'); await sleep(300);
+      await type('.formbody textarea', 'デモ操作の担当');
+      await js(`(() => { const ts = document.querySelectorAll('.formbody textarea'); ts[1].value = 'PCを操作してデモを見せる役をやりたい'; ts[1].dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await click('内容を確認する'); await sleep(400);
+      await click('この内容で預ける'); await idle();
+      await shot('deposited');
+      // 幹事のPCで会議が進むのを待つ（こちらはAPIキーなし）
+      await until(async () => { await click('会議室').catch(() => {}); return (await text('#view')).includes('推薦案（第1回の議論）'); }, '幹事のPCで進んだ会議が届かない', 120000);
+      if (!(await text('#view')).includes('りょうま')) throw new Error('幹事の名前がメンバー側に出ていない');
+      await until(async () => !(await js(`[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('この案を承認する')).disabled`)), '承認ボタンが押せない', 60000);
+      await click('この案を承認する'); await idle();
+      await until(async () => (await text('#overlay')).includes('決定'), '幹事の承認後、決定が届かない', 90000);
+      await shot('decided');
+    }
+    if (errors.length) throw new Error('コンソールエラー: ' + errors.join(' / '));
+    fs.writeFileSync(path.join(DIR, `ok-${ROLE}`), 'ok');
+    console.log(`[${ROLE}] OK`);
+    app.exit(0);
+  } catch (e) {
+    await shot('error').catch(() => {});
+    console.error(`[${ROLE}] NG`, e.message, errors);
+    app.exit(1);
+  }
+});
