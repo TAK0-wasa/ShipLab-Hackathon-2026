@@ -12,7 +12,6 @@ const stats = { get: 0, post: 0, del: 0, denied: 0 };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   const eq = (k) => (u.searchParams.get(k) || '').replace(/^eq\./, '');
-  if (u.pathname.startsWith('/functions/')) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end('{}'); } // AIサーバーは無い、という想定
   if (!u.pathname.endsWith('/rest/v1/docs') || !req.headers.apikey || req.headers.authorization !== 'Bearer ' + req.headers.apikey) {
     stats.denied++;
     res.writeHead(401, { 'content-type': 'application/json' });

@@ -64,7 +64,7 @@ app.whenReady().then(async () => {
       await type('#j-code', code);
       await click('参加する'); await sleep(1800);
       const who = await text('#who');
-      if (!(await text('#switch')).includes('発表の役割分担') || !who.includes('あおい（メンバー）') || !who.includes('共有中')) throw new Error('参加後の表示がおかしい: ' + who + ' / ' + (await text('#status')));
+      if (!who.includes('# 発表の役割分担') || !who.includes('あおい（メンバー）') || !who.includes('共有中')) throw new Error('参加後の表示がおかしい: ' + who + ' / ' + (await text('#status')));
       const topic = await js(`(async () => { document.querySelectorAll('nav button')[1].click(); await new Promise(r => setTimeout(r, 400)); document.querySelectorAll('details').forEach((d) => (d.open = true)); await new Promise(r => setTimeout(r, 200)); return document.querySelector('#view').innerText; })()`);
       if (!topic.includes('発表がうまくいくか ×2') || !topic.includes('幹事が設定します')) throw new Error('幹事が入れた評価基準がメンバーに見えない: ' + topic.slice(0, 200));
       await click('個室'); await sleep(300);

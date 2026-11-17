@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
-<title>かわりに会議</title>
+<title>AI代理人会議</title>
 <style>
   :root {
     --teal: #0b6b6b; --teal-d: #084f4f; --tint: #e5f1f0; --bg: #f6f8f8; --card: #fff;
@@ -77,21 +77,18 @@
   details.more { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 10px; }
   details.more > summary { font-size: 13px; font-weight: 400; }
   #main { flex: 1; min-height: 0; display: flex; }
-  #switch { position: relative; }
-  #switch:empty { display: none; }
-  .swbtn { display: flex; align-items: center; gap: 6px; max-width: 320px; font: inherit; border: 1px solid var(--line); background: #fff; color: var(--text); padding: 6px 10px 6px 12px; border-radius: 20px; cursor: pointer; }
-  .swbtn:hover { border-color: var(--teal); }
-  .swlabel { color: var(--sub); font-size: 12.5px; white-space: nowrap; }
-  .swname { font-weight: 700; color: var(--teal-d); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .caret { color: var(--sub); font-size: 11px; }
-  .swbtn .dot, .mitem .dot { min-width: 18px; height: 18px; border-radius: 9px; background: var(--warn); color: #fff; font-size: 11px; line-height: 18px; text-align: center; padding: 0 5px; font-weight: 700; }
-  .swmenu { position: absolute; top: calc(100% + 8px); left: 0; z-index: 30; width: 340px; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 12px 34px rgba(0,0,0,.16); padding: 12px; }
-  .swhead { font-size: 12.5px; color: var(--sub); margin: 0 4px 8px; }
-  .mitem { display: flex; align-items: center; gap: 8px; width: 100%; font: inherit; text-align: left; border: 1px solid var(--line); background: #fff; color: var(--text); padding: 10px 12px; border-radius: 10px; margin-bottom: 6px; cursor: pointer; }
-  .mitem:hover { border-color: var(--teal); }
-  .mitem.on { background: var(--tint); border-color: transparent; }
-  .mitem .nm { flex: 1; min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .swfoot { display: flex; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  #side { width: 220px; flex: none; overflow: auto; background: #0f4f4f; color: #dff0ef; padding: 14px 10px; }
+  #side:empty { display: none; }
+  .sidehead { font-size: 11.5px; letter-spacing: .04em; opacity: .7; margin: 0 8px 6px; }
+  .sideitem { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+  .sideitem:hover { background: rgba(255,255,255,.1); }
+  .sideitem.on { background: #fff; color: var(--teal-d); font-weight: 700; }
+  .sideitem .hash { opacity: .6; }
+  .sideitem .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sideitem .dot { min-width: 18px; height: 18px; border-radius: 9px; background: var(--warn); color: #fff; font-size: 11px; line-height: 18px; text-align: center; padding: 0 5px; font-weight: 700; }
+  .sideitem.add { opacity: .85; font-size: 13px; }
+  .sideitem:disabled { opacity: .4; cursor: default; }
+  .roomname { font-weight: 700; color: var(--teal-d); margin-right: 10px; max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
   #view { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
   .wrap { max-width: 980px; margin: 0 auto; padding: 20px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
@@ -161,12 +158,6 @@
   .callrow { display: grid; grid-template-columns: 13em 10em 5em 1fr; gap: 8px; font-size: 13px; }
   .call details.more { margin-top: 6px; padding-top: 6px; }
   pre.prompt { white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 12.5px; line-height: 1.6; background: var(--bg); border-radius: 8px; padding: 10px; max-height: 320px; overflow: auto; margin: 6px 0 0; }
-  .feas { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--bg); border-left: 4px solid var(--line); }
-  .feas.ok { border-left-color: #2e8b3d; } .feas.partial { border-left-color: #d49a00; } .feas.hard { border-left-color: #c0392b; }
-  .feashead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .fv { padding: 1px 9px; border-radius: 12px; font-size: 12.5px; font-weight: 700; color: #fff; background: #888; }
-  .fv.ok { background: #2e8b3d; } .fv.partial { background: #b98300; } .fv.hard { background: #c0392b; }
-  .feas a { color: var(--teal-d); }
   .pts { margin-top: 6px; font-weight: 700; color: var(--teal-d); }
   .score { float: right; font-size: 12.5px; color: var(--sub); }
   .dropped { opacity: .6; }
@@ -221,15 +212,14 @@
 </head>
 <body>
 <header>
-  <h1>かわりに会議</h1>
-  <div id="switch"></div>
+  <h1>AI代理人会議</h1>
   <nav id="nav"></nav>
   <div class="who" id="who"></div>
 </header>
 <div id="overlay"></div>
 <div id="status"></div>
 <div id="turn"></div>
-<div id="main"><main id="view"></main></div>
+<div id="main"><aside id="side"></aside><main id="view"></main></div>
 <script src="engine.js"></script>
 <script src="app.js"></script>
 </body>
