@@ -8,10 +8,10 @@ const os = require('os');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adk-smoke-'));
 const outDir = process.env.SMOKE_OUT ? path.resolve(process.env.SMOKE_OUT) : tmp;
 app.setPath('appData', tmp);
-app.setPath('userData', path.join(tmp, 'user'));
-fs.mkdirSync(path.join(tmp, 'user'), { recursive: true });
+app.setPath('userData', path.join(tmp, 'AI代理人会議'));
+fs.mkdirSync(path.join(tmp, 'AI代理人会議'), { recursive: true });
 fs.mkdirSync(outDir, { recursive: true });
-fs.writeFileSync(path.join(tmp, 'user', 'config.json'), JSON.stringify({ name: 'りょうま', room: 'smoke', memberId: 'm-me001', apiKey: 'dummy' }));
+fs.writeFileSync(path.join(tmp, 'AI代理人会議', 'config.json'), JSON.stringify({ name: 'りょうま', room: 'smoke', memberId: 'm-me001', apiKey: 'dummy' }));
 
 // 他の2人はすでに預け済み、という状態を作る
 const brief = (title, target, feature, worries) => ({

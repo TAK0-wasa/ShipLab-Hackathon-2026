@@ -15,7 +15,8 @@ if (profile) {
 }
 
 // アプリ名を変えても、これまでの設定（名前・会議の一覧・APIキー）を引き継げるように、保存先は以前の名前のままにする
-if (!profile && path.basename(app.getPath('userData')) === 'かわりに会議') {
+// （インストールしたアプリでも開発中でも、同じ場所を使うように、ここで決め打ちする）
+if (!profile) {
   app.setPath('userData', path.join(app.getPath('appData'), 'AI代理人会議'));
 }
 const userFile = (name) => path.join(app.getPath('userData'), name);
@@ -102,14 +103,23 @@ function saveConfig(patch) {
 // 配布用: このフォルダに api-key.local.json（{"apiKey":"sk-ant-…"}）があれば、APIキーを入力していないPCでもそのキーでAIを動かす。
 // キーはそのまま読める形でフォルダに入るので、渡す相手はチーム内に限り、公開する場所（GitHubなど）には置かない
 function bundledKey() {
-  const d = readJson(process.env.KAWARINI_KEY_FILE || path.join(__dirname, 'api-key.local.json'), null);
+  const d = readJson(process.env.KAWARINI_KEY_FILE || localFile('api-key.local.json'), null);
   const k = d && typeof d.apiKey === 'string' ? d.apiKey.trim() : '';
   return k.startsWith('sk-') ? k : '';
 }
 // 幹事用: このフォルダに shared-db.local.json（{"url":"…","key":"…"}）があれば、
 // 「会議を作る」の共有データベース欄にあらかじめ入れておく（メンバーは招待コードで受け取るので不要）
+// 探す場所: 設定の保存先フォルダ → （インストールしたアプリなら）アプリの .exe と同じフォルダ → 開発用のこのフォルダ
+function localFile(name) {
+  const dirs = [app.getPath('userData'), app.isPackaged ? path.dirname(process.execPath) : __dirname];
+  for (const d of dirs) {
+    const f = path.join(d, name);
+    if (fs.existsSync(f)) return f;
+  }
+  return path.join(dirs[dirs.length - 1], name);
+}
 function dbDefault() {
-  const d = readJson(path.join(__dirname, 'shared-db.local.json'), null);
+  const d = readJson(localFile('shared-db.local.json'), null);
   return d && d.url && d.key ? { url: String(d.url), key: String(d.key) } : null;
 }
 
