@@ -1,4 +1,4 @@
-// AI代理人会議 — 会議エンジン（画面からも Node のテストからも使える）
+// かわりに会議 — 会議エンジン（画面からも Node のテストからも使える）
 // 重要な設計: 各エージェントの呼び出しには「その担当者の考え」と「公開された会議ログ」しか渡さない。
 // 進行役（合体案づくり・推薦理由の説明）には公開情報しか渡さない。
 (function (root, factory) {
@@ -8,6 +8,7 @@
   const LOCK_MS = 3 * 60 * 1000;
   // 採点は100点満点: お題と評価基準への合い方 70点 ＋ メンバーの支持 30点
   const RATIO = { crit: 70, support: 30 };
+  const FEAS_LABEL = { ok: '締切までに作れる', partial: '一部なら作れる', hard: '締切までには難しい' };
   const SUPPORT_LABEL = { 5: '強く推す', 4: '好き', 3: 'どちらでもいい', 2: 'あまり乗り気でない', 1: '嫌' };
   const clamp5 = (v, d) => {
     const n = Math.round(Number(v));
@@ -61,16 +62,20 @@
     return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
   }
 
-  async function askJson(llm, system, user, maxTokens, onPartial) {
+  async function askJson(llm, system, user, maxTokens, onPartial, extra) {
     let lastErr;
     for (let i = 0; i < 3; i++) {
       if (i) await sleep(600 * i);
       const retry = i ? '\n\n※前回の出力はJSONとして読めませんでした。JSONオブジェクトだけを出力してください。' : '';
       const req = { system, messages: [{ role: 'user', content: user + retry }], maxTokens: maxTokens || 8000 };
+      if (extra) Object.assign(req, extra);
       if (onPartial) req.onText = (t) => { try { onPartial(partialStatement(t)); } catch (e) {} };
-      const text = await llm(req);
+      const raw = await llm(req);
+      const [text, src] = String(raw || '').split('§SRC§');
       try {
-        return parseJson(text);
+        const out = parseJson(text);
+        if (src) out.__sources = src.split(/\s+/).filter((u) => /^https?:\/\//.test(u)).slice(0, 8);
+        return out;
       } catch (e) {
         lastErr = e;
       }
@@ -152,7 +157,7 @@
   // ---------- 個室での聞き取り ----------
   function interviewSystem(name, context) {
     return [
-      `あなたは${name}さん専属の代理人エージェントです。ここは他のメンバーには見えない「個室」で、${name}さんの本音を聞き取るのが仕事です。`,
+      `あなたは${name}さん専属の代理人エージェントです。ここは他のメンバーには見えない、本人と1対1で話す場で、${name}さんの本音を聞き取るのが仕事です。`,
       'あとであなたは、チームの「どの案にするか」を決める会議に、本人の代わりに出席します。そのために必要なことを短い質問で聞いてください。',
       '',
       '聞き取りの進め方（短く済ませる。聞くのは次の4項目だけ）:',
@@ -170,7 +175,7 @@
       '- 質問は1回に1つ。1〜3文で短く。敬語でやわらかく。音声で読み上げられることがあるので、記号や箇条書きに頼らず、話し言葉で書く。',
       '- 本人が言っていないことを決めつけない。評価や説教はしない。',
       '- 外したくない条件は最大' + MAX_MUST + 'つまで。多いときは優先順位を聞く。',
-      '- 4項目が聞けたら、それ以上質問を足さず、「『預ける』ボタンを押してください」と案内する。本人が途中で預けたいと言ったら止めない（足りない所は推測として扱われる）。それ以降は本人が「やっぱりこう思う」と言ってきたら受け止める。',
+      '- 4項目が聞けたら、それ以上質問を足さず、「『預ける内容を確認する』ボタンを押してください」と案内する。本人が途中で預けたいと言ったら止めない（足りない所は推測として扱われる）。それ以降は本人が「やっぱりこう思う」と言ってきたら受け止める。',
       '- 返答の一番最後の行に、必ず <<済:1,2>> の形で、ここまでに本人から聞けた項目の番号だけを書く（1=案 2=好きな点と不安な点 3=外したくない条件 4=実装でできること）。まだ何も聞けていなければ <<済:>> と書く。この行は本人には表示されない。',
       '',
       context || '',
@@ -208,7 +213,7 @@
   async function extractBrief(llm, name, chat) {
     const transcript = chat.map((m) => `${m.role === 'user' ? name : 'エージェント'}: ${m.content}`).join('\n');
     const system = [
-      `あなたは${name}さんの代理人エージェントです。個室での会話記録から、会議に持っていく「預かりメモ」をJSONで作ります。`,
+      `あなたは${name}さんの代理人エージェントです。本人と1対1で話した会話記録から、会議に持っていく「預かりメモ」をJSONで作ります。`,
       'ルール:',
       '- 本人が実際に言った内容は by を "me" にする。本人が言っておらず、あなたが仮で埋めた内容は by を "ai" にする。この区別は必ず守る。',
       '- 各案の target（誰向けか）・problem（何を解決するか）・feature（目玉機能）が空なら、もっともらしい候補を1つ仮置きして by を "ai" にする。',
@@ -228,7 +233,7 @@
       transcript,
     ].join('\n');
     const brief = normalizeBrief(await askJson(llm, system, user, 8000));
-    if (!brief.ideas.length) throw new Error('案が1つも読み取れませんでした。個室で案を話してから、もう一度お試しください。');
+    if (!brief.ideas.length) throw new Error('案が1つも読み取れませんでした。代理人に案を話してから、もう一度お試しください。');
     return brief;
   }
 
@@ -236,8 +241,9 @@
   function candText(cands, members, anonymous) {
     return cands
       .map((c) => {
+        const feas = c.feas ? [`  実現性（進行役AIの検討）: ${FEAS_LABEL[c.feas.verdict] || '-'}`, `  締切までに作れる範囲: ${c.feas.mvp || '-'}`, `  後回しにする範囲: ${c.feas.later || '-'}`] : [];
         if (anonymous) {
-          return [`[${c.id}] ${c.title}`, `  概要: ${c.summary || '-'}`, `  誰向けか: ${partText(c.target) || '-'}`, `  何を解決するか: ${partText(c.problem) || '-'}`, `  目玉機能: ${partText(c.feature) || '-'}`].join('\n');
+          return [`[${c.id}] ${c.title}`, `  概要: ${c.summary || '-'}`, `  誰向けか: ${partText(c.target) || '-'}`, `  何を解決するか: ${partText(c.problem) || '-'}`, `  目玉機能: ${partText(c.feature) || '-'}`].concat(feas).join('\n');
         }
         const kind = c.origin === 'merged' ? '合体案' : c.origin === 'ai' ? '進行役AIの新案' : `元の案／提案: ${(c.owners || []).map((o) => (members[o] || {}).name || '?').join('・')}`;
         return [
@@ -246,7 +252,7 @@
           `  誰向けか: ${partText(c.target) || '-'}`,
           `  何を解決するか: ${partText(c.problem) || '-'}`,
           `  目玉機能: ${partText(c.feature) || '-'}`,
-        ].join('\n');
+        ].concat(feas).join('\n');
       })
       .join('\n');
   }
@@ -415,6 +421,7 @@
       '    2 = この基準で弱点がある。',
       '    1 = この基準を満たしていない。',
       '- 案が誰のものか、どう作られたかは知らされていない。案の内容だけで採点する。',
+      '- 案に「実現性」と「締切までに作れる範囲」が書かれていれば、完成度や実際に動くかに関わる基準では、それを踏まえて採点する。',
       '- 案どうしで差がつくように採点する。全部に3や4を並べない。根拠が案の内容から読み取れない基準は3にする。',
       '- marks は、下の評価基準の番号順に並べた整数の配列にする（基準の数と同じ長さ）。',
       '- comment は、その案がどの基準に強く、どの基準に弱いかを1〜2文で。',
@@ -582,6 +589,60 @@
     await postMsg(ctx, env, { speaker: 'facilitator', speakerName: '進行役AI', type: 'merge', text: str(out.statement) || '合体案と新しい案を作りました。' });
   }
 
+  // 進行役AIが、各案が技術的に作れるかを調べ、締切までに作れる範囲を説明する
+  // （デスクトップ版でAPIキーがあるときは、Web検索で必要なAPIやライブラリを確かめる）
+  async function facilitatorFeasibility(ctx, env) {
+    const cands = activeCands(env.snap);
+    const system = [
+      'あなたは会議の中立な進行役で、経験のあるエンジニアとして各案の技術的な実現性を調べます。特定のメンバーの味方はしません。あなたが知っているのは公開された内容だけです。',
+      'やること:',
+      '- 各案について、目玉機能を作るのに必要な技術・API・ライブラリ・端末の機能を洗い出す。',
+      '- Web検索が使えるときは、必要なAPIやライブラリが実在して今も使えるか、無料で使える範囲、既知の制限（対応していない環境、審査や申請が要る、など）を調べる。調べるのは判断に効く点だけに絞る。検索が使えないときは、自分の知識で判断する。',
+      '- 「メンバーが実装でできること」と「締切・条件」に照らして、締切までに作れるかを判定する。',
+      'ルール:',
+      '- verdict は "ok"（締切までに目玉機能まで作れる）/ "partial"（範囲を絞れば作れる）/ "hard"（締切までには難しい）のどれか。',
+      '- needs は、必要な技術や外部サービスを1〜2文で。',
+      '- mvp は、締切までに作れる範囲を具体的に1〜2文で（何ができる状態になるか）。verdict が "hard" でも、見せられる最小の形があれば書く。',
+      '- later は、後回しにするもの・今回は作らないものを1文で。無ければ空文字。',
+      '- risk は、一番つまずきそうな点を1文で。',
+      '- 確かめられなかったことを、確かめたように書かない。分からない点は risk に「未確認」と書く。',
+      '- statement は会議での発言。2〜3段落で、段落の間は空行（\\n\\n）。全体としてどの案が作りやすく、どの案は範囲を絞る必要があるかを説明する。',
+      '- 出力はJSONオブジェクトだけ。',
+    ].join('\n');
+    const user = [
+      '【タスク:feas】各案の技術的な実現性を調べ、締切までに作れる範囲を説明してください。',
+      '',
+      '【お題と評価基準】',
+      topicText(env.snap),
+      '',
+      '【メンバーが実装でできること】',
+      skillText(env),
+      '',
+      '【会議に出ている案】',
+      candText(cands, env.snap.member),
+      '',
+      '出力形式:',
+      '{"statement":"","items":[{"candId":"","verdict":"partial","needs":"","mvp":"","later":"","risk":""}]}',
+    ].join('\n');
+    let out;
+    try {
+      out = await askJson(ctx.llm, system, user, 8000, (text) => ctx.onLive && ctx.onLive({ speakerName: '進行役AI', text }), { search: true });
+    } catch (e) {
+      if (!e.unreadable) throw e;
+      await postMsg(ctx, env, { speaker: 'system', speakerName: 'システム', type: 'system', text: '実現性の検討は、応答を読み取れなかったため省きました' });
+      return;
+    }
+    const sources = out.__sources || [];
+    for (const x of Array.isArray(out.items) ? out.items : []) {
+      const c = x && env.snap.cand[x.candId];
+      if (!c || c.dropped) continue;
+      const data = { ...c, feas: { verdict: FEAS_LABEL[x.verdict] ? x.verdict : 'partial', needs: str(x.needs), mvp: str(x.mvp), later: str(x.later), risk: str(x.risk), searched: sources.length > 0, sources } };
+      await ctx.store.put('cand', x.candId, data);
+      env.snap.cand[x.candId] = data;
+    }
+    await postMsg(ctx, env, { speaker: 'facilitator', speakerName: '進行役AI', type: 'feas', text: str(out.statement) || '各案の実現性を検討しました。' });
+  }
+
   async function facilitatorExplain(ctx, env, rec) {
     const names = env.snap.member;
     const cands = activeCands(env.snap);
@@ -595,6 +656,7 @@
     const system = [
       'あなたは会議の中立な進行役です。推薦する案は、すでに点数のルールで決まっています（100点満点。お題と評価基準への合い方が70点、メンバーの支持が30点。推測による支持は重み半分。本人が「嫌」と言った案と、元の案より点が低い合体案は対象外）。',
       'あなたの仕事は、その結果を人間のメンバーが納得できるように説明することです。結果そのものは変えないでください。',
+      '- 案に「実現性」が書かれていれば、reason の中で、推薦案について締切までに作れる範囲にも一言触れる。',
       '- reason: なぜこの案が推薦なのかを2段落で。段落の間は空行（\\n\\n）にする。1段落目は結論と一番の決め手を1〜2文、2段落目は他の案と比べた理由を1〜2文。',
       '- influences: 誰のどの意見が結論に効いたかを、メンバーごとに1つずつ。発言そのものではなく要旨で。',
       '- conflict: 上位2案で意見が割れている場合だけ、対立点を1〜2文で整理（例: 実装の大変さが不安／面白さ重視）。割れていなければ空文字。',
@@ -744,6 +806,10 @@
 
         await progress('進行役AIが合体案と新しい案を作っています', 'merge', '進行役AI');
         await facilitatorMerge(ctx, env);
+        await setState(ctx, env, {});
+
+        await progress('進行役AIが、技術的に作れるかを調べています', 'feas', '進行役AI');
+        await facilitatorFeasibility(ctx, env);
         await setState(ctx, env, {});
       } else {
         for (const id of Object.keys(snap.approval)) await store.del('approval', id);
@@ -897,6 +963,7 @@
   return {
     LOCK_MS,
     RATIO,
+    FEAS_LABEL,
     SUPPORT_LABEL,
     evalScore,
     parseCriteria,

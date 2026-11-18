@@ -13,10 +13,11 @@ function memStore() {
 
 const calls = [];
 function mockLlm(opts) {
-  return async ({ system, messages }) => {
+  return async (req) => {
+    const { system, messages } = req;
     const user = messages[0].content;
     const task = (user.match(/【タスク:(\w+)】/) || [])[1];
-    calls.push({ system, user, task });
+    calls.push({ system, user, task, search: req.search });
     const section = user.split('【会議に出ている案】')[1] || user.split('【案の内容】')[1] || '';
     const ids = [...section.split('【')[0].matchAll(/^\[([\w-]+)\]/gm)].map((x) => x[1]);
     const who = (system.match(/あなたは(.+?)さんの代理人/) || [])[1];
@@ -42,6 +43,7 @@ function mockLlm(opts) {
         questions: task === 'round2' ? [{ candId: ids[0], text: `${who}さんへの確認です` }] : [],
       });
     }
+    if (task === 'feas') return JSON.stringify({ statement: '実現性を検討しました。', items: ids.map((id, i) => ({ candId: id, verdict: i === 0 ? 'ok' : 'partial', needs: 'n', mvp: `${id}の最小の形`, later: 'l', risk: 'r' })) }) + (opts.withSources ? '§SRC§https://example.com/a https://example.com/b' : '');
     if (task === 'judge') return JSON.stringify({ scores: ids.map((id) => ({ candId: id, marks: id.startsWith('mix') ? [5, 4] : [3, 2], comment: 'c' })) });
     if (task === 'explain') return JSON.stringify({ reason: '全員の評価が高いためです。', influences: [{ name: 'A', point: '実装の軽さ' }], conflict: '', plan: { steps: '進め方', roles: [{ name: 'A', role: '画面' }] } });
     throw new Error('unknown task ' + task);
@@ -130,11 +132,15 @@ function mockLlm(opts) {
   assert.strictEqual(Object.values(snap.cand).filter((c) => c.origin === 'ai').length, 1);
   assert.strictEqual(rec.topId, 'mix1-1', '合体案が最高評価なら推薦される');
   assert.strictEqual(Object.values(snap.question).filter((q) => q.status === 'open').length, 3);
-  assert.strictEqual(calls.length, 3 + 1 + 3 + 1, '基準なし: 意見3 + 合体1 + 評価3 + 説明1');
+  assert.strictEqual(calls.length, 3 + 1 + 1 + 3 + 1, '基準なし: 意見3 + 合体1 + 実現性1 + 評価3 + 説明1');
+  assert.strictEqual(calls.filter((c) => c.search).length, 1, 'Web検索を頼むのは実現性の検討だけ');
+  assert.strictEqual(calls.find((c) => c.task === 'feas').search, true);
+  assert.ok(Object.values(snap.cand).filter((c) => !c.dropped).every((c) => c.feas && c.feas.mvp && c.feas.searched === false), 'すべての案に、作れる範囲が付く（検索なしの印）');
+  assert.ok(calls.filter((c) => c.task === 'round2').every((c) => c.user.includes('締切までに作れる範囲')), '評価し直すとき、代理人は実現性を見ている');
   assert.strictEqual(Object.keys(snap.skill).length, 3, '実装でできることが共有される');
-  assert.strictEqual(Object.keys(snap.call).length, 8, 'AIの呼び出しが1回ずつ記録される');
+  assert.strictEqual(Object.keys(snap.call).length, 9, 'AIの呼び出しが1回ずつ記録される');
   assert.ok(Object.values(snap.call).every((c) => c.ms >= 0 && c.user && c.out && c.owner));
-  assert.strictEqual(Object.values(snap.call).filter((c) => c.owner === 'facilitator').length, 2);
+  assert.strictEqual(Object.values(snap.call).filter((c) => c.owner === 'facilitator').length, 3);
 
   // 情報の分離: 各エージェントの呼び出しに他人の本音が混ざっていないこと。進行役には誰の本音も渡らないこと
   for (const c of calls) {
@@ -174,10 +180,14 @@ function mockLlm(opts) {
   // ---- 評価基準あり・本人の「嫌」・推測の低評価 ----
   await store.put('room', 'main', { theme: 'かゆいところに手が届くアプリ', criteria: 'テーマに合っているか\n新しさ ×2' });
   calls.length = 0;
-  const rec2 = await Engine.runMeeting(ctxOf(people[1], { vetoBy: 'B', lowGuessBy: 'C' }), { mode: 'full' });
+  const rec2 = await Engine.runMeeting(ctxOf(people[1], { vetoBy: 'B', lowGuessBy: 'C', withSources: true }), { mode: 'full' });
   snap = await Engine.snapshot(store);
   assert.strictEqual(calls.filter((c) => c.task === 'judge').length, 1, '基準があれば採点の呼び出しが1回入る');
-  assert.strictEqual(calls.length, 3 + 1 + 3 + 1 + 1);
+  assert.strictEqual(calls.length, 3 + 1 + 1 + 3 + 1 + 1);
+  const anyCand = Object.values(snap.cand).find((c) => c.feas);
+  assert.strictEqual(anyCand.feas.searched, true, '検索した出典があれば、確認済みの印が付く');
+  assert.deepStrictEqual(anyCand.feas.sources, ['https://example.com/a', 'https://example.com/b']);
+  assert.ok(calls.find((c) => c.task === 'judge').user.includes('締切までに作れる範囲'), '採点にも実現性が渡る');
   assert.ok(calls.find((c) => c.task === 'judge').user.includes('2. 新しさ'), '採点に基準が番号つきで渡る');
   const judgeIn = calls.find((c) => c.task === 'judge').user;
   assert.ok(!judgeIn.includes('（合体案）') && !judgeIn.includes('進行役AIの新案') && !judgeIn.includes('提案:'), '採点には案の出どころを渡さない');

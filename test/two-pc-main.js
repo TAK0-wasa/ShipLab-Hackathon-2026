@@ -10,6 +10,7 @@ const URL0 = process.env.FAKE_DB_URL;
 const home = path.join(DIR, ROLE);
 app.setPath('appData', home); // 保存先を完全に分ける（別のPCと同じ状態）
 app.setPath('userData', path.join(home, 'user'));
+process.env.KAWARINI_DB = URL0 + '|fake-key'; // アプリに入っている接続先の代わりに、テスト用のサーバーを使う
 require('../main.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -34,13 +35,13 @@ app.whenReady().then(async () => {
       await type('#c-theme', '発表の役割分担');
       await type('#c-criteria', '全員が無理なく担当できるか\n発表がうまくいくか ×2');
       await type('#c-size', '2');
-      await type('#c-surl', URL0);
-      await type('#c-skey', 'fake-key');
+      if (await js(`document.querySelector('#c-more').open`)) throw new Error('接続先の欄が最初から開いている');
       await js(`document.querySelector('#c-demo').checked = true`);
       await click('会議を作る'); await sleep(1500);
       const who = await text('#who');
       if (!who.includes('共有中')) throw new Error('共有中にならない: ' + who + ' / ' + (await text('#status')));
       const code = await js(`document.querySelector('#s-invite').value`);
+      if (!/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(code)) throw new Error('招待コードが8文字になっていない: ' + code);
       fs.writeFileSync(path.join(DIR, 'code.txt'), code);
       await click('個室'); await sleep(300);
       for (const msg of ['自分は話す役をやりたい', '人前で話すのは好き。質問に答えるのは不安。', 'なし', 'スライドも作れる。今夜2時間使える']) { await type('#chatInput', msg); await click('送信'); await idle(); }
@@ -61,10 +62,10 @@ app.whenReady().then(async () => {
       const code = fs.readFileSync(path.join(DIR, 'code.txt'), 'utf8');
       await click('メンバーとして参加する'); await sleep(300);
       await type('#j-name', 'あおい');
-      await type('#j-code', code);
+      await type('#j-code', ' ' + code.toLowerCase().replace('-', ' ') + ' '); // 小文字・空白まじりで入れても通る
       await click('参加する'); await sleep(1800);
       const who = await text('#who');
-      if (!who.includes('# 発表の役割分担') || !who.includes('あおい（メンバー）') || !who.includes('共有中')) throw new Error('参加後の表示がおかしい: ' + who + ' / ' + (await text('#status')));
+      if (!(await text('#switch')).includes('発表の役割分担') || !who.includes('あおい（メンバー）') || !who.includes('共有中')) throw new Error('参加後の表示がおかしい: ' + who + ' / ' + (await text('#status')));
       const topic = await js(`(async () => { document.querySelectorAll('nav button')[1].click(); await new Promise(r => setTimeout(r, 400)); document.querySelectorAll('details').forEach((d) => (d.open = true)); await new Promise(r => setTimeout(r, 200)); return document.querySelector('#view').innerText; })()`);
       if (!topic.includes('発表がうまくいくか ×2') || !topic.includes('幹事が設定します')) throw new Error('幹事が入れた評価基準がメンバーに見えない: ' + topic.slice(0, 200));
       await click('個室'); await sleep(300);

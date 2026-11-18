@@ -12,6 +12,7 @@ const stats = { get: 0, post: 0, del: 0, denied: 0 };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   const eq = (k) => (u.searchParams.get(k) || '').replace(/^eq\./, '');
+  if (u.pathname.startsWith('/functions/')) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end('{}'); } // AIサーバーは無い、という想定
   if (!u.pathname.endsWith('/rest/v1/docs') || !req.headers.apikey || req.headers.authorization !== 'Bearer ' + req.headers.apikey) {
     stats.denied++;
     res.writeHead(401, { 'content-type': 'application/json' });
@@ -20,22 +21,25 @@ const server = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
+    const xroom = req.headers['x-room'] || ''; // 本物と同じく、x-room の会議の行だけを読み書きさせる
     if (req.method === 'GET') {
       stats.get++;
-      const out = [...rows.entries()].filter(([k]) => k.startsWith(eq('room') + '|')).map(([k, data]) => ({ kind: k.split('|')[1], id: k.split('|').slice(2).join('|'), data }));
+      const out = [...rows.entries()].filter(([k]) => k.startsWith(eq('room') + '|') && eq('room') === xroom).map(([k, data]) => ({ kind: k.split('|')[1], id: k.split('|').slice(2).join('|'), data }));
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify(out));
     }
     if (req.method === 'POST') {
       stats.post++;
       if (u.searchParams.get('on_conflict') !== 'room,kind,id' || !/merge-duplicates/.test(req.headers.prefer || '')) { res.writeHead(400); return res.end(JSON.stringify({ message: 'upsert の指定がない' })); }
-      for (const r of JSON.parse(body)) rows.set(`${r.room}|${r.kind}|${r.id}`, r.data);
+      const list = JSON.parse(body);
+      if (list.some((r) => r.room !== xroom)) { stats.denied++; res.writeHead(403, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ message: 'new row violates row-level security policy', code: '42501' })); }
+      for (const r of list) rows.set(`${r.room}|${r.kind}|${r.id}`, r.data);
       res.writeHead(201);
       return res.end();
     }
     if (req.method === 'DELETE') {
       stats.del++;
-      rows.delete(`${eq('room')}|${eq('kind')}|${eq('id')}`);
+      if (eq('room') === xroom) rows.delete(`${eq('room')}|${eq('kind')}|${eq('id')}`);
       res.writeHead(204);
       return res.end();
     }

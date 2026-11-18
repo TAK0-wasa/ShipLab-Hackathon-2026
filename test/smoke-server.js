@@ -38,7 +38,8 @@ const server = http.createServer((req, res) => {
 
 server.listen(0, '127.0.0.1', () => {
   const url = `http://127.0.0.1:${server.address().port}`;
-  require('../main.js');
+  process.env.KAWARINI_DB = process.env.KAWARINI_DB || 'none'; // アプリに入っている接続先は使わない
+require('../main.js');
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   app.whenReady().then(async () => {
     await sleep(1500);

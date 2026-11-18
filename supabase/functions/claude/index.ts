@@ -32,7 +32,7 @@ Deno.serve(async (req) => {
   if (!room || !apikey || !base) return fail(403, "会議が指定されていません");
   try {
     const r = await fetch(`${base}/rest/v1/docs?select=id&room=eq.${encodeURIComponent(room)}&kind=eq.room&limit=1`, {
-      headers: { apikey, authorization: `Bearer ${apikey}` },
+      headers: { apikey, authorization: `Bearer ${apikey}`, "x-room": room },
     });
     const rows = r.ok ? await r.json() : [];
     if (!Array.isArray(rows) || rows.length === 0) return fail(403, "この会議は見つかりません");

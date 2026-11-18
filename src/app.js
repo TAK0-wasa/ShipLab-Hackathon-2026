@@ -1,10 +1,10 @@
-// AI代理人会議 — 画面
+// かわりに会議 — 画面
 /* global Engine, api */
 (function () {
   const S = { cfg: {}, priv: {}, snap: null, tab: 'room', busy: '', progress: '', error: '', notice: '', drafts: {}, dirty: false, teamSize: 3 };
   const $ = (id) => document.getElementById(id);
   const GREETING = (name) =>
-    `こんにちは、${name}さんの代理人です。ここは他のメンバーには見えない個室です。\nまず、考えている案を教えてください。一言ずつでも、まだ固まっていない「こんな感じのやつ」でも大丈夫です。`;
+    `こんにちは、${name}さんの代理人です。ここで話したことは、${name}さんと代理人だけのものです。\nまず、考えている案を教えてください。一言ずつでも、まだ固まっていない「こんな感じのやつ」でも大丈夫です。`;
 
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
@@ -39,7 +39,7 @@
   });
   const ready = () => !!(S.cfg.name && S.cfg.room && S.cfg.memberId);
   // AIを呼べるか（APIキーがある、または見本モード）。呼べない人はフォームで預け、会議は幹事のアプリが進める
-  const canAI = () => !!(S.cfg.hasApiKey || S.cfg.demo);
+  const canAI = () => !!(S.cfg.hasApiKey || S.cfg.demo || S.cfg.serverAi);
   const roomInfo = () => (S.snap && S.snap.room && S.snap.room.main) || {};
   const isLeader = () => !roomInfo().leaderId || roomInfo().leaderId === S.cfg.memberId;
   const state = () => (S.snap && S.snap.state.main) || { phase: 'collecting', round: 0 };
@@ -64,7 +64,7 @@
     const me = S.cfg.memberId;
     const others = Object.keys(snap.brief).filter((id) => id !== me && snap.member[id]).length;
     if (!snap.brief[me] && st.phase !== 'decided') {
-      out.push({ key: 'deposit', urgent: others > 0, tab: 'room', target: '', text: others ? `ほかの${others}人は預け済みです。個室であなたの考えを預けてください。` : '個室で代理人に考えを預けてください。' });
+      out.push({ key: 'deposit', urgent: others > 0, tab: 'room', target: '', text: others ? `ほかの${others}人は預け済みです。「① 考えを預ける」であなたの考えを預けてください。` : '「① 考えを預ける」で代理人に考えを預けてください。' });
     }
     const qs = Object.entries(snap.question).filter(([, q]) => q.memberId === me && q.status === 'open').map(([id]) => id).sort();
     if (qs.length) out.push({ key: 'q:' + qs.join(','), urgent: true, tab: 'meeting', target: 'sec-q', text: `代理人からの確認質問が${qs.length}件あります。` });
@@ -87,10 +87,13 @@
     if (st.phase === 'review') {
       const parts = st.participants || [];
       const wait = parts.filter((id) => !(snap.approval[id] && snap.approval[id].ok && snap.approval[id].round === st.round));
-      return wait.length ? `${wait.map(name).join('さん・')}さんの承認を待っています。` : '';
+      return wait.length ? `${wait.map(name).join('さん・')}さんの承認を待っています。` + (window.PROTO ? '（この試作では、承認の欄のボタンから人を切り替えて承認します）' : '') : '';
     }
     const wait = Object.keys(snap.member).filter((id) => !snap.brief[id]);
-    return wait.length ? `${wait.map(name).join('さん・')}さんが預けるのを待っています。` : '全員が預けました。会議室で会議を始められます。';
+    const notJoined = Math.max(0, S.teamSize - Object.keys(snap.member).length);
+    if (wait.length) return `${wait.map(name).join('さん・')}さんが預けるのを待っています。` + (window.PROTO ? '（この試作では、下のボタンから人を切り替えて入力します）' : '') + (notJoined ? `（ほかに、まだ参加していない人が${notJoined}人います）` : '');
+    if (notJoined) return `まだ参加していない人が${notJoined}人います。全員が預けると、会議が自動で始まります。`;
+    return '全員が預けました。まもなく会議が始まります。';
   }
   // 新しく自分の番になったら、OSの通知を出す（デスクトップ版。アプリを最小化していても届く）
   function checkTurn() {
@@ -100,7 +103,7 @@
     if (S.todoInit && fresh.length) {
       try {
         if (window.Notification && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())) {
-          new Notification('AI代理人会議：あなたの番です', { body: fresh[0].text });
+          new Notification('かわりに会議：あなたの番です', { body: fresh[0].text });
         }
       } catch (e) {}
     }
@@ -129,7 +132,7 @@
       const decided = state().phase === 'decided';
       if (w) {
         el.className = 'show ' + (decided ? 'done' : 'wait');
-        el.append(h('b', {}, decided ? '決定' : 'いまは待ち'), h('span', {}, w), decided ? h('button', { class: 'btn small ghost', onclick: () => goTo('meeting', 'sec-rec') }, '見る') : null);
+        el.append(...[h('b', {}, decided ? '決定' : 'いまは待ち'), h('span', {}, w), decided ? h('button', { class: 'btn small ghost', onclick: () => goTo('meeting', 'sec-rec') }, '見る') : null].filter(Boolean));
       }
     }
   }
@@ -140,6 +143,7 @@
     S.drafts = {};
     S.open = {};
     S.editTopic = false;
+    S.edit = null;
     S.formIdeas = 1;
     S.autoSig = '';
     S.todoInit = false;
@@ -178,7 +182,7 @@
         const keys = urgent.map((t) => t.key).join('|');
         if (prev && keys && keys !== prev.keys) {
           try {
-            if (window.Notification && Notification.permission === 'granted') new Notification('AI代理人会議：あなたの番です', { body: `「${roomTitle(r)}」${urgent[0].text}` });
+            if (window.Notification && Notification.permission === 'granted') new Notification('かわりに会議：あなたの番です', { body: `「${roomTitle(r)}」${urgent[0].text}` });
           } catch (e) {}
         }
         S.peek[r.room] = { n: urgent.length, keys, decided: (snap.state.main || {}).phase === 'decided' };
@@ -188,24 +192,61 @@
     }
     renderSide();
   }
+  // 会議の切り替えは、ヘッダーの「会議：◯◯」から開くメニューで行う
   function renderSide() {
-    const el = $('side');
+    const el = $('switch');
     if (!el) return;
     el.replaceChildren();
     if (!S.cfg.rooms || !roomList().length) return; // Web版や、まだ会議が無いときは出さない
+    const curEntry = roomList().find((r) => r.room === S.cfg.room);
+    const peekOf = (r) => (S.peek && S.peek[r.room]) || { n: 0, decided: false };
+    const otherTurns = roomList().filter((r) => r.room !== S.cfg.room).reduce((t, r) => t + peekOf(r).n, 0);
+    const open = (mode) => {
+      S.menuOpen = false;
+      S.startMode = mode;
+      S.error = '';
+      render();
+    };
+    el.append(
+      h(
+        'button',
+        { class: 'swbtn', title: '会議を切り替える', onclick: (e) => { e.stopPropagation(); S.menuOpen = !S.menuOpen; renderSide(); } },
+        h('span', { class: 'swlabel' }, '会議：'),
+        h('span', { class: 'swname' }, curEntry ? roomTitle(curEntry) : '（選んでいません）'),
+        otherTurns ? h('span', { class: 'dot', title: 'ほかの会議であなたの番です' }, otherTurns) : null,
+        h('span', { class: 'caret' }, S.menuOpen ? '▴' : '▾')
+      )
+    );
+    if (!S.menuOpen) return;
     const mineNow = myTodos().filter((t) => t.urgent).length;
     el.append(
-      h('div', { class: 'sidehead' }, '参加中の会議'),
-      ...roomList().map((r) => {
-        const cur = r.room === S.cfg.room;
-        const n = cur ? mineNow : (S.peek && S.peek[r.room] ? S.peek[r.room].n : 0);
-        return h('button', { class: 'sideitem' + (cur && !S.startMode ? ' on' : ''), title: roomTitle(r), onclick: () => switchRoom(r.room) }, h('span', { class: 'hash' }, (cur ? state().phase === 'decided' : S.peek && S.peek[r.room] && S.peek[r.room].decided) ? '✓' : '#'), h('span', { class: 'nm' }, roomTitle(r)), n ? h('span', { class: 'dot', title: 'あなたの番です' }, n) : null);
-      }),
-      h('div', { class: 'sidehead', style: 'margin-top:14px' }, '会議を増やす'),
-      h('button', { class: 'sideitem add' + (S.startMode === 'create' ? ' on' : ''), disabled: !!S.busy, onclick: () => { S.startMode = 'create'; S.error = ''; render(); } }, '＋ 会議を作る'),
-      h('button', { class: 'sideitem add' + (S.startMode === 'join' ? ' on' : ''), disabled: !!S.busy, onclick: () => { S.startMode = 'join'; S.error = ''; render(); } }, '＋ 招待コードで参加')
+      h(
+        'div',
+        { class: 'swmenu', onclick: (e) => e.stopPropagation() },
+        h('div', { class: 'swhead' }, '参加している会議'),
+        roomList().map((r) => {
+          const cur = r.room === S.cfg.room;
+          const n = cur ? mineNow : peekOf(r).n;
+          const decided = cur ? state().phase === 'decided' : peekOf(r).decided;
+          return h(
+            'button',
+            { class: 'mitem' + (cur ? ' on' : ''), onclick: () => { S.menuOpen = false; switchRoom(r.room); } },
+            h('span', { class: 'nm' }, roomTitle(r)),
+            decided ? h('span', { class: 'tag push' }, '決定') : null,
+            n ? h('span', { class: 'dot', title: 'あなたの番です' }, n) : null,
+            cur ? h('span', { class: 'hint' }, '表示中') : null
+          );
+        }),
+        h('div', { class: 'swfoot' }, h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => open('create') }, '新しい会議を作る'), h('button', { class: 'btn small ghost', disabled: !!S.busy, onclick: () => open('join') }, '招待コードで参加する'))
+      )
     );
   }
+  document.addEventListener('click', () => {
+    if (S.menuOpen) {
+      S.menuOpen = false;
+      renderSide();
+    }
+  });
 
   // 折りたたみ（開閉の状態は描き直しをまたいで保つ）
   function fold(key, title, defaultOpen, ...kids) {
@@ -318,7 +359,7 @@
 
   function confirmDeposit() {
     run('meeting', async () => {
-      const brief = { ...S.priv.pendingBrief, updates: [] };
+      const brief = { ...S.priv.pendingBrief, updates: S.priv.pendingBrief.updates || [] };
       await api.store.put('brief', S.cfg.memberId, brief);
       await api.store.put('member', S.cfg.memberId, { ...(S.snap.member[S.cfg.memberId] || {}), name: S.cfg.name, deposited: true, depositedAt: Date.now() });
       S.priv.brief = brief;
@@ -328,13 +369,14 @@
       const deposited = Object.keys(S.snap.brief).filter((id) => S.snap.member[id]).length;
       const hadMeeting = Object.keys(S.snap.cand).length > 0;
       if (!canAI()) {
+        S.tab = 'meeting';
         S.notice = `預けました（いま ${deposited} / ${S.teamSize} 人）。全員が預けると、幹事のアプリが開いているときに会議が進みます。`;
       } else if (deposited >= 2 && (deposited >= S.teamSize || hadMeeting)) {
         S.tab = 'meeting';
         render();
         await Engine.runMeeting(ctx(), { mode: 'full' });
       } else {
-        S.notice = `預けました。ほかのメンバーが預けると会議が始まります（いま ${deposited} / ${S.teamSize} 人）。`;
+        S.tab = 'meeting';
       }
     });
   }
@@ -378,7 +420,7 @@
   function approve() {
     run('approve', async () => {
       const decided = await Engine.approve(ctx());
-      S.notice = decided ? '' : '承認しました。ほかのメンバーの承認を待っています。';
+      S.notice = decided ? '' : window.PROTO ? '承認しました。下のボタンで、残りの人に切り替えて承認してください。' : '承認しました。ほかのメンバーの承認を待っています。';
     });
   }
 
@@ -417,6 +459,123 @@
       b.updates && b.updates.length ? h('div', { class: 'kv' }, h('b', {}, 'あとから伝えたこと： '), h('ul', { class: 'plain' }, b.updates.map((u) => h('li', {}, u.text)))) : null
     );
   }
+  // ---------- 預けた内容の手直し ----------
+  const E_KEYS = ['likes', 'worries', 'must', 'impl', 'want', 'accept'];
+  function clearEditDrafts() {
+    Object.keys(S.drafts).forEach((k) => { if (k.startsWith('e:')) delete S.drafts[k]; });
+  }
+  function openEdit(src) {
+    const b = src === 'pending' ? S.priv.pendingBrief : S.priv.brief;
+    if (!b) return;
+    clearEditDrafts();
+    b.ideas.forEach((i, n) => {
+      S.drafts['e:title' + n] = i.title || '';
+      S.drafts['e:sum' + n] = i.summary || '';
+      S.drafts['e:target' + n] = Engine.partText(i.target) || '';
+      S.drafts['e:problem' + n] = Engine.partText(i.problem) || '';
+      S.drafts['e:feature' + n] = Engine.partText(i.feature) || '';
+    });
+    S.drafts['e:likes'] = b.likes || '';
+    S.drafts['e:worries'] = b.worries || '';
+    S.drafts['e:must'] = (b.mustHaves || []).join('\n');
+    S.drafts['e:impl'] = b.impl || '';
+    S.drafts['e:want'] = b.wantFromOthers || '';
+    S.drafts['e:accept'] = b.acceptCondition || '';
+    S.edit = { src, n: Math.max(1, b.ideas.length), push: b.ideas.map((i) => i.push || 'normal'), removed: [] };
+    S.error = '';
+    render();
+  }
+  function closeEdit() {
+    S.edit = null;
+    clearEditDrafts();
+    S.error = '';
+    render();
+  }
+  function saveEdit() {
+    const ed = S.edit;
+    const base = ed.src === 'pending' ? S.priv.pendingBrief : S.priv.brief;
+    const v = (k) => (S.drafts['e:' + k] || '').trim();
+    const ideas = [];
+    for (let i = 0; i < ed.n; i++) {
+      if (ed.removed.includes(i)) continue;
+      const title = v('title' + i);
+      const summary = v('sum' + i);
+      if (!title && !summary) continue;
+      const orig = base.ideas[i] || {};
+      // 書き換えたところは「本人」になる。触っていないところは元のまま（AIが補完した印も残る）
+      const part = (k) => {
+        const text = v(k + i);
+        const o = orig[k];
+        if (o && typeof o === 'object' && Engine.partText(o) === text) return o;
+        return { text, by: text ? 'me' : 'ai' };
+      };
+      ideas.push({ title: title || summary.slice(0, 16), summary, target: part('target'), problem: part('problem'), feature: part('feature'), push: ed.push[i] || 'normal' });
+    }
+    if (!ideas.length) {
+      S.error = '案を1つ以上残してください（名前か説明のどちらかだけでも大丈夫です）。';
+      return renderStatus();
+    }
+    const next = Engine.normalizeBrief({ ideas, likes: v('likes'), worries: v('worries'), mustHaves: v('must').split(/\n+/), wantFromOthers: v('want'), acceptCondition: v('accept'), impl: v('impl') });
+    next.updates = base.updates || [];
+    const same = JSON.stringify({ ...next, editedAt: 0 }) === JSON.stringify({ ...Engine.normalizeBrief(base), updates: base.updates || [], editedAt: 0 });
+    S.edit = null;
+    clearEditDrafts();
+    S.error = '';
+    if (same) {
+      S.notice = '変更はありませんでした。';
+      return render();
+    }
+    if (ed.src === 'saved') next.editedAt = Date.now(); // 預け直しの印（幹事のアプリが議論をやり直す合図）
+    else if (base.editedAt) next.editedAt = base.editedAt;
+    S.priv.pendingBrief = next;
+    S.notice = ed.src === 'saved' ? '手直しした内容です。「この内容で預ける」を押すと、預け直します。' : '';
+    savePriv();
+    render();
+  }
+  function editCard() {
+    const ed = S.edit;
+    const one = { style: 'min-height:40px;height:40px' };
+    const shown = Array.from({ length: ed.n }, (_, i) => i).filter((i) => !ed.removed.includes(i));
+    const pushBtn = (i, val, label) => h('button', { class: 'btn small' + ((ed.push[i] || 'normal') === val ? '' : ' ghost'), onclick: () => { ed.push[i] = val; render(); } }, label);
+    const ideaBlock = (i, no) => [
+      h('div', { class: 'row', style: 'margin-top:14px;align-items:center' }, h('h3', { style: 'margin:0;flex:1' }, shown.length > 1 ? `案${no + 1}` : '案'), shown.length > 1 ? h('button', { class: 'btn ghost small', onclick: () => { ed.removed.push(i); render(); } }, 'この案を消す') : null),
+      h('label', {}, '案の名前'),
+      draftArea('e:title' + i, { ...one, id: 'e-title' + i }),
+      h('label', {}, 'どんな案か'),
+      draftArea('e:sum' + i, { id: 'e-sum' + i }),
+      h('label', {}, '誰向けか'),
+      draftArea('e:target' + i, one),
+      h('label', {}, '何を解決するか'),
+      draftArea('e:problem' + i, one),
+      h('label', {}, '目玉機能'),
+      draftArea('e:feature' + i, one),
+      h('label', {}, 'この案への気持ち'),
+      h('div', { class: 'row' }, pushBtn(i, 'push', '推し'), pushBtn(i, 'normal', 'ふつう'), pushBtn(i, 'drop', '無しでいい')),
+    ];
+    return h(
+      'div',
+      { class: 'card', id: 'sec-edit' },
+      h('h2', {}, '預ける内容を手直しする'),
+      h('div', { class: 'hint' }, '書き換えたところは「本人」の内容として扱われます。空欄にした「誰向けか・何を解決するか・目玉機能」は、会議で代理人が仮に補います。'),
+      shown.map((i, no) => ideaBlock(i, no)),
+      shown.length < 3 ? h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn ghost small', onclick: () => { ed.n += 1; render(); } }, '案をもう1つ足す')) : null,
+      h('h3', { style: 'margin-top:16px' }, 'あなたの代理人だけが持つ内容'),
+      h('label', {}, '好きな点'),
+      draftArea('e:likes', {}),
+      h('label', {}, '不安な点'),
+      draftArea('e:worries', {}),
+      h('label', {}, `外したくない条件（1行に1つ、${Engine.MAX_MUST}つまで）`),
+      draftArea('e:must', {}),
+      h('label', {}, '実装でできること'),
+      draftArea('e:impl', {}),
+      h('label', {}, '取り入れたい部分'),
+      draftArea('e:want', one),
+      h('label', {}, '納得の条件'),
+      draftArea('e:accept', one),
+      h('div', { class: 'row end', style: 'margin-top:12px' }, h('button', { class: 'btn ghost', onclick: closeEdit }, 'やめる'), h('button', { class: 'btn', disabled: !!S.busy, onclick: saveEdit }, '手直しを反映する'))
+    );
+  }
+
   function questionsBox() {
     const qs = myOpenQuestions();
     if (!qs.length) return null;
@@ -477,7 +636,7 @@
     return h(
       'div',
       { class: 'chat' },
-      h('div', { class: 'chat-head' }, h('b', {}, `${S.cfg.name}さんの個室`), h('div', { class: 'hint' }, 'APIキーなしで参加しているので、代理人との会話の代わりに、このフォームで考えを預けます。入力した内容はこのPCに下書きとして残り、預けるまで他のメンバーには見えません。')),
+      h('div', { class: 'chat-head' }, h('b', {}, `${S.cfg.name}さんの代理人と話す`), h('div', { class: 'hint' }, 'APIキーなしで参加しているので、代理人との会話の代わりに、このフォームで考えを預けます。入力した内容はこのPCに下書きとして残り、預けるまで他のメンバーには見えません。')),
       h(
         'div',
         { class: 'msgs formbody' },
@@ -495,6 +654,82 @@
       ),
       h('div', { class: 'composer' }, h('span', { class: 'hint', style: 'flex:1;align-self:center' }, '預ける前に、右側で内容を確認できます。'), h('button', { class: 'btn', disabled: !!S.busy, onclick: formToBrief }, '内容を確認する'))
     );
+  }
+
+  // ---------- はじめての人向けの案内（Webプロトタイプ） ----------
+  // 1つの画面で3人分を試すので、「ほかの人を待つ」場面では、その人に切り替えるボタンを出す
+  async function actAs(id, tab) {
+    if (S.busy) return;
+    if (tab) S.tab = tab;
+    await switchMember(id);
+  }
+  async function fillRest() {
+    if (S.busy) return;
+    const n = window.PROTO.fillSamples();
+    S.cfg = await api.getConfig();
+    await enterRoom();
+    S.notice = n ? `まだの${n}人にサンプルの考えを入れました。まもなく会議が始まります。` : 'サンプルを入れられる人がいませんでした。人を切り替えて入力してください。';
+    render();
+  }
+  function protoWaitHelp(yet) {
+    if (!window.PROTO || !yet.length) return null;
+    return h(
+      'div',
+      { class: 'q', style: 'margin-top:12px' },
+      h('p', {}, 'この試作では、1つの画面で3人分を操作します。まだの人の分は、その人に切り替えて入力するか、サンプルの考えを入れてください。'),
+      h('div', { class: 'row' }, yet.map((m) => h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => actAs(m.id, 'room') }, `${m.name}として入力する`)), h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: fillRest }, 'まだの人にサンプルを入れる'))
+    );
+  }
+  function protoApproveHelp(st) {
+    if (!window.PROTO || st.phase !== 'review') return null;
+    const snap = S.snap;
+    const yet = (st.participants || []).filter((id) => id !== S.cfg.memberId && !(snap.approval[id] && snap.approval[id].ok && snap.approval[id].round === st.round));
+    if (!yet.length) return null;
+    return h(
+      'div',
+      { class: 'q', style: 'margin-top:10px' },
+      h('p', {}, 'この試作では、ほかの人の承認も自分で行います。下のボタンでその人に切り替えて、「この案を承認する」を押してください。全員が承認すると決定です。'),
+      h('div', { class: 'row' }, yet.map((id) => h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => actAs(id, 'meeting') }, `${(snap.member[id] || {}).name || '?'}として承認する`)))
+    );
+  }
+  // 評価基準が空のまま会議が始まらないように、預ける前に知らせる
+  function critNote() {
+    const st = state();
+    const r = roomInfo();
+    if (st.phase !== 'collecting' || isRunning() || !isLeader() || String(r.criteria || '').trim()) return null;
+    return h(
+      'div',
+      { class: 'q' },
+      h('p', {}, '評価基準がまだ入っていません。入れておくと、代理人と進行役AIがその基準ごとに案を採点します。会議が始まる前（全員が預ける前）に入れるのがおすすめです。'),
+      h('div', { class: 'row' }, h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => { S.tab = 'meeting'; S.editTopic = true; S.drafts['t:theme'] = r.theme || ''; S.drafts['t:criteria'] = r.criteria || ''; S.drafts['t:conditions'] = r.conditions || ''; render(); const ta = document.querySelector('details.fold textarea'); if (ta) ta.scrollIntoView({ block: 'center' }); } }, '評価基準を入れる'))
+    );
+  }
+
+  // 「いまやること」: 聞き取りの進み具合と、預けるための主ボタンを1か所にまとめる
+  function todoCard(said, left, covered) {
+    return h(
+      'div',
+      { class: 'card todo' },
+      h('span', { class: 'pill' }, 'いまやること'),
+      h('div', { class: 'todo-t' }, !canAI() ? 'フォームに考えを書く' : !said ? '代理人に案を話す' : left === 0 ? '内容を確認して預ける' : '代理人の質問に答える'),
+      h('div', { class: 'hint' }, !canAI() ? '左のフォームに入力して「内容を確認する」を押すと、ここに預ける内容が出ます。' : !said ? 'チャットに、考えている案を一言書いてください。' : left === 0 ? '聞き取りが終わりました。' : `あと${left}問で聞き取りが終わります。`),
+      canAI() ? h('ul', { class: 'checks' }, Engine.INTERVIEW_ITEMS.map((name, i) => h('li', { class: covered.includes(i + 1) ? 'ok' : '' }, h('span', { class: 'ck' }, covered.includes(i + 1) ? '✓' : ''), name))) : null,
+      canAI() ? h('button', { class: 'btn big block', disabled: !!S.busy || !said, onclick: makeBrief }, '預ける内容を確認する') : null,
+      canAI() ? h('div', { class: 'hint center' }, '途中でも預けられます。足りない所は代理人が推測します。') : null
+    );
+  }
+  // 推薦案の点数と実現性を、数字のタイルで見せる
+  function scoreTiles(rec, top) {
+    const t = (rec.table || []).find((x) => x.candId === rec.topId);
+    const tile = (label, v, unit, main) => h('div', { class: 'tile' }, h('span', { class: 'tl' }, label), h('span', { class: 'tv' + (main ? ' main' : '') }, String(v), h('small', {}, unit)));
+    const tiles = [];
+    if (t && t.total !== undefined) {
+      tiles.push(tile('合計', t.total, ' / 100点', true));
+      if (t.crit !== null && t.crit !== undefined) tiles.push(tile('評価基準への合い方', t.crit, ' / 70'), tile('メンバーの支持', t.support, ' / 30'));
+      else tiles.push(h('div', { class: 'tile' }, h('span', { class: 'tl' }, '内訳'), h('span', { class: 'tv s' }, '支持のみ（評価基準が未設定）')));
+    } else if (t && t.score !== undefined) tiles.push(tile('点数', t.score, '点', true));
+    if (top.feas) tiles.push(h('div', { class: 'tile feas-' + top.feas.verdict }, h('span', { class: 'tl' }, '実現性'), h('span', { class: 'tv s' }, Engine.FEAS_LABEL[top.feas.verdict] || '—')));
+    return tiles.length ? h('div', { class: 'tiles' }, tiles) : null;
   }
 
   // ---------- 個室 ----------
@@ -525,74 +760,65 @@
       h(
         'div',
         { class: 'chat-head' },
-        h('b', {}, `${S.cfg.name}さんの個室`),
-        h('div', { class: 'hint' }, 'ここでの会話はこのPCにだけ保存され、他のメンバーには見えません。'),
-        S.priv.brief && !S.priv.pendingBrief
-          ? null
-          : h(
-              'div',
-              { class: 'progress' },
-              Engine.INTERVIEW_ITEMS.map((name, i) => h('span', { class: 'pg' + (covered.includes(i + 1) ? ' ok' : '') }, (covered.includes(i + 1) ? '✓ ' : '') + name)),
-              h('span', { class: 'hint' }, left === 0 ? '聞き取りは済みました。預けられます。' : `あと${left}問ほど。途中でも預けられます。`),
-              S.priv.pendingBrief ? null : h('button', { class: 'btn small' + (left === 0 ? '' : ' ghost'), disabled: !!S.busy || !said, onclick: makeBrief }, left === 0 ? '預ける' : 'ここまでで預ける')
-            )
+        h('div', { class: 'agenthead' }, avatar(S.cfg.memberId), h('div', {}, h('b', {}, `${S.cfg.name}さんの代理人`), h('div', { class: 'hint' }, 'ここでの話はこのPCにだけ保存され、ほかの人には見えません。')))
       ),
       msgs,
       h('div', { class: 'composer' }, input, h('button', { class: 'btn', disabled: !!S.busy, onclick: sendChat }, '送信'))
     );
 
     const side = h('div', { class: 'side' });
+    const cn = critNote();
+    if (cn) side.append(cn);
     const qb = questionsBox();
     if (qb) side.append(qb);
-    if (S.priv.pendingBrief) {
+    if (S.edit && (S.edit.src === 'pending' ? S.priv.pendingBrief : S.priv.brief)) {
+      side.append(editCard());
+    } else if (S.priv.pendingBrief) {
       side.append(
         h(
           'div',
           { class: 'card' },
           h('h2', {}, '預ける内容の確認'),
-          h('div', { class: 'hint' }, '「本人」はあなたが言ったこと、「AIが補完」は代理人が仮で埋めたところです。違っていたら「やめる」を押して、個室で言い直してください。'),
+          h('div', { class: 'hint' }, '「本人」はあなたが言ったこと、「AIが補完」は代理人が仮で埋めたところです。違っていたら「手直しする」で直接書き換えられます。「やめる」を押して、代理人とのチャットで言い直すこともできます。'),
           briefView(S.priv.pendingBrief),
           h(
             'div',
             { class: 'row end' },
             h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: () => { delete S.priv.pendingBrief; savePriv(); render(); } }, 'やめる'),
+            h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: () => openEdit('pending') }, '手直しする'),
             h('button', { class: 'btn', disabled: !!S.busy, onclick: confirmDeposit }, 'この内容で預ける')
           )
         )
       );
     } else if (S.priv.brief) {
+      const wc = waitCard(true);
+      if (wc) side.append(wc);
       side.append(
         h(
           'div',
           { class: 'card' },
-          h('h2', {}, '代理人に預け済み'),
+          h('div', { class: 'row', style: 'align-items:center' }, h('h2', { style: 'margin:0;flex:1' }, '代理人に預け済み'), state().phase === 'decided' ? null : h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => openEdit('saved') }, '手直しする')),
           briefView(S.priv.brief),
           h('label', {}, 'やっぱりこう思う（代理人に追加で伝える）'),
           draftArea('tell', { placeholder: '例：実装が間に合うなら、Bさんの案でもいいと思ってきた' }),
           h(
             'div',
             { class: 'row end' },
-            canAI() ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: makeBrief }, '会話から作り直して預け直す') : h('span', { class: 'hint' }, '案そのものを変えるときは、左のフォームを直して「内容を確認する」を押してください。'),
+            canAI() ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: makeBrief }, '会話から作り直して預け直す') : h('span', { class: 'hint' }, '案そのものを変えるときは、上の「手直しする」か、左のフォームを直して「内容を確認する」を押してください。'),
             h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => tellAgent('tell') }, '伝えて議論をやり直す')
           )
         )
       );
     } else {
       side.append(
-        h(
-          'div',
-          { class: 'card' },
-          h('h2', {}, '考えを預ける'),
-          h('div', { class: 'hint' }, '左の個室で、案と「好きな点・不安な点・外したくない条件・実装でできること」を代理人に話してください。質問は4つほどです。全部答えなくても預けられます（足りない所は代理人が推測し、「推測」と表示されます）。預ける前に内容を確認できます。'),
-          canAI() ? h('div', { class: 'row end' }, h('button', { class: 'btn', disabled: !!S.busy || !said, onclick: makeBrief }, 'まとめて預ける')) : h('div', { class: 'hint', style: 'margin-top:8px' }, '左のフォームに入力して「内容を確認する」を押すと、ここに預ける内容が出ます。')
-        )
+        todoCard(said, left, covered)
       );
     }
     return h('div', { class: 'room' }, canAI() ? chat : formPane(), side);
   }
 
   // ---------- 会議のライブ表示 ----------
-  const STAGES = [['round1', '意見を出す'], ['merge', '合体案・新案'], ['round2', '評価し直す'], ['explain', '推薦をまとめる']];
+  const STAGES = [['round1', '意見を出す'], ['merge', '合体案・新案'], ['feas', '作れるか調べる'], ['round2', '評価し直す'], ['explain', '推薦をまとめる']];
   // 文章を段落ごとに分けて表示する
   const paras = (text) => {
     const ps = Engine.paragraphs(text);
@@ -682,6 +908,7 @@
         const cur = (S.snap.room && S.snap.room.main) || {};
         await api.store.put('room', 'main', { ...cur, theme: (S.drafts['t:theme'] || '').trim(), criteria: (S.drafts['t:criteria'] || '').trim(), conditions: (S.drafts['t:conditions'] || '').trim() });
         S.editTopic = false;
+    S.edit = null;
         S.notice = Object.keys(S.snap.cand).length ? '保存しました。いまの会議結果に反映するには、ログの下の「最初から会議をやり直す」を押してください。' : '保存しました。チーム全員の会議に反映されます。';
       });
     S.open = S.open || {};
@@ -696,13 +923,13 @@
       h('label', {}, '評価基準（1行に1つ。重みを付けたい基準は、行の最後に「×2」のように書く）'),
       draftArea('t:criteria', { placeholder: '例：\nテーマに合っているか\n新しさがあるか ×2\n完成度・実際に動くか\nプレゼンで伝わるか', style: 'min-height:110px' }),
       h('label', {}, '締切・条件'),
-      draftArea('t:conditions', { placeholder: '例：3人チーム、開発期間は7日間、11/18締切・11/19発表', style: 'min-height:40px;height:40px' }),
+      draftArea('t:conditions', { placeholder: '例：3人チーム、11/19（木）20時 提出締切', style: 'min-height:40px;height:40px' }),
       h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', onclick: () => { S.editTopic = false; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: save }, '保存する'))
     );
   }
 
   // ---------- 実行記録（AIの呼び出しごとの時間と、渡した情報） ----------
-  const TASK_LABEL = { round1: '意見を出す', merge: '合体案・新案を作る', round2: '評価し直す', rerun: '評価を見直す', judge: '評価基準で採点', explain: '推薦の説明' };
+  const TASK_LABEL = { round1: '意見を出す', merge: '合体案・新案を作る', feas: '技術的に作れるか調べる', round2: '評価し直す', rerun: '評価を見直す', judge: '評価基準で採点', explain: '推薦の説明' };
   function callsFold() {
     const calls = Object.entries(S.snap.call || {}).map(([id, c]) => ({ id, ...c })).sort((a, b) => a.at - b.at);
     if (!calls.length) return null;
@@ -713,7 +940,7 @@
     const who = (c) => (c.owner === 'facilitator' ? '進行役AI' : `${(S.snap.member[c.owner] || {}).name || '?'}さんの代理人`);
     const copy = async () => {
       try {
-        await navigator.clipboard.writeText(JSON.stringify({ app: 'AI代理人会議', exportedAt: new Date().toISOString(), snapshot: S.snap }, null, 1));
+        await navigator.clipboard.writeText(JSON.stringify({ app: 'かわりに会議', exportedAt: new Date().toISOString(), snapshot: S.snap }, null, 1));
         S.notice = '会議の記録をコピーしました。メモ帳などに貼り付けて保存できます。';
       } catch (e) {
         S.error = 'コピーできませんでした。';
@@ -770,10 +997,15 @@
     const rec = st.recommendation || {};
     const t = (rec.table || []).find((x) => x.candId === st.decidedCandId);
     const names = (st.participants || []).map((id) => (snap.member[id] || {}).name || '?');
-    const lines = [`【決定】${roomInfo().theme || 'AI代理人会議'}`, '', `決まった案：${c.title || ''}`];
+    const lines = [`【決定】${roomInfo().theme || 'かわりに会議'}`, '', `決まった案：${c.title || ''}`];
     if (c.summary) lines.push(c.summary);
     lines.push('', `誰向けか：${Engine.partText(c.target) || '-'}`, `何を解決するか：${Engine.partText(c.problem) || '-'}`, `目玉機能：${Engine.partText(c.feature) || '-'}`);
     if (t && t.total !== undefined) lines.push('', `点数：${pointsText(t)}`);
+    if (c.feas) {
+      lines.push('', `技術的に作れるか：${Engine.FEAS_LABEL[c.feas.verdict] || ''}（${c.feas.searched ? 'Web検索で確認' : 'AIの知識による判断'}）`, `締切までに作れる範囲：${c.feas.mvp || '-'}`);
+      if (c.feas.later) lines.push(`後回しにする範囲：${c.feas.later}`);
+      if (c.feas.risk) lines.push(`つまずきそうな点：${c.feas.risk}`);
+    }
     if (rec.reason) lines.push('', '理由：', rec.reason);
     if (rec.plan && (rec.plan.steps || (rec.plan.roles || []).length)) {
       lines.push('', '実装の進め方（案）：');
@@ -818,6 +1050,7 @@
       t && t.total !== undefined ? h('div', { class: 'pts' }, pointsText(t)) : null,
       approvalRow(st),
       rec.reason ? h('div', {}, h('h3', {}, 'なぜこの案か'), h('div', { class: 'reason' }, paras(rec.reason))) : null,
+      feasView(c, false),
       h('div', { class: 'row', style: 'margin-top:14px;align-items:center' }, h('button', { class: 'btn', onclick: copy }, '決定内容をコピー'), h('span', { class: 'hint' }, '案・理由・点数・担当の案を文章にして、チームのチャットに貼れます。')),
       more
     );
@@ -845,7 +1078,7 @@
     el.className = 'show';
     el.onclick = (e) => { if (e.target === el) close(); };
     try {
-      if (window.Notification && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())) new Notification('AI代理人会議：決定しました', { body: `「${c.title}」に決まりました。` });
+      if (window.Notification && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())) new Notification('かわりに会議：決定しました', { body: `「${c.title}」に決まりました。` });
     } catch (e) {}
   }
   function checkDecided() {
@@ -861,6 +1094,23 @@
     if (st.phase === 'decided' && was !== 'decided') showDecided(st);
   }
 
+  // 技術的な実現性（進行役AIの検討）
+  function feasView(c, compact) {
+    const f = c && c.feas;
+    if (!f) return null;
+    const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return u; } };
+    return h(
+      'div',
+      { class: 'feas ' + f.verdict },
+      h('div', { class: 'feashead' }, h('b', {}, '技術的に作れるか'), h('span', { class: 'fv ' + f.verdict }, Engine.FEAS_LABEL[f.verdict] || ''), h('span', { class: 'hint' }, f.searched ? 'Web検索で確認' : 'AIの知識による判断（検索なし）')),
+      h('div', { class: 'kv' }, h('b', {}, '締切までに作れる範囲： '), f.mvp || '—'),
+      f.later ? h('div', { class: 'kv' }, h('b', {}, '後回しにする範囲： '), f.later) : null,
+      compact ? null : f.needs ? h('div', { class: 'kv' }, h('b', {}, '必要なもの： '), f.needs) : null,
+      f.risk ? h('div', { class: 'kv' }, h('b', {}, 'つまずきそうな点： '), f.risk) : null,
+      !compact && f.sources && f.sources.length ? h('div', { class: 'hint' }, '調べた先： ', f.sources.map((u, i) => [i ? '、' : '', h('a', { href: u, target: '_blank', rel: 'noopener' }, host(u))])) : null
+    );
+  }
+
   // 点数の内訳を一言で（以前の形式で保存された会議結果は合計だけ）
   function pointsText(t) {
     if (t.total === undefined) return `${t.score}点`;
@@ -868,6 +1118,63 @@
   }
 
   // ---------- 会議室 ----------
+  // ---------- 預けたあとの「待ち」の表示 ----------
+  // 預けてから会議が始まるまで、いま何を待っていて、次に何が起きるかを見せる
+  function waitCard(inRoom) {
+    const snap = S.snap;
+    const st = state();
+    const me = S.cfg.memberId;
+    if (!snap || !snap.brief[me] || st.phase !== 'collecting' || isRunning() || S.busy === 'meeting') return null;
+    const members = Object.entries(snap.member).map(([id, m]) => ({ id, ...m }));
+    const total = Math.max(S.teamSize, members.length);
+    const done = members.filter((m) => snap.brief[m.id]);
+    const yet = members.filter((m) => !snap.brief[m.id]);
+    const notJoined = Math.max(0, total - members.length);
+    const all = done.length >= total;
+    const theme = roomInfo().theme || '';
+    const stepNow = all ? 2 : 1;
+    const steps = ['考えを預ける', '全員がそろうのを待つ', '代理人どうしの会議', '結果を確認して承認'];
+    const remind = async () => {
+      const names = yet.map((m) => m.name + 'さん').join('、');
+      const text = `【かわりに会議】${theme ? '「' + theme + '」の会議で、' : ''}${names ? names + 'の' : 'まだの人の'}入力を待っています。アプリを開いて、「① 考えを預ける」で考えを預けてください（5分ほどです）。全員が預けると、AIの代理人どうしの会議が自動で始まります。`;
+      try {
+        await navigator.clipboard.writeText(text);
+        S.notice = 'お願いの文をコピーしました。チャットに貼り付けて送ってください。';
+      } catch (e) {
+        S.error = 'コピーできませんでした。';
+      }
+      renderStatus();
+    };
+    const person = (m, ok) => h('div', { class: 'wp' + (ok ? ' ok' : '') }, avatar(m.id), h('span', { class: 'nm' }, m.name + (m.id === me ? '（自分）' : '')), h('span', { class: 'st' }, ok ? '✓ 預け済み' : '入力待ち'));
+    return h(
+      'div',
+      { class: 'card waitcard', id: 'sec-wait' },
+      h('div', { class: 'whead' }, h('span', { class: 'wcheck' }, '✓'), h('div', {}, h('h2', { style: 'margin:0' }, 'あなたの考えを預かりました'), h('div', { class: 'hint' }, all ? '全員がそろいました。まもなく会議が始まります。' : `あと${yet.length + notJoined}人が預けると、代理人どうしの会議が自動で始まります。`))),
+      h('div', { class: 'wsteps' }, steps.map((t, i) => h('span', { class: 'wstep' + (i < stepNow ? ' done' : i === stepNow ? ' now' : '') }, (i < stepNow ? '✓ ' : `${i + 1}. `) + t))),
+      h('div', { class: 'wpeople' }, done.map((m) => person(m, true)), yet.map((m) => person(m, false)), Array.from({ length: notJoined }, () => h('div', { class: 'wp' }, h('span', { class: 'av none' }, '?'), h('span', { class: 'nm' }, 'まだ参加していない人'), h('span', { class: 'st' }, '招待待ち')))),
+      protoWaitHelp(yet),
+      window.PROTO && yet.length ? null : h('div', { class: 'wlive' }, h('span', { class: 'pulse' }), 'ほかの人の状況を数秒ごとに自動で確認しています。この画面のまま待っていて大丈夫です。'),
+      h(
+        'div',
+        { class: 'wnext' },
+        h('b', {}, '待っている間にできること'),
+        h(
+          'ul',
+          { class: 'plain' },
+          h('li', {}, '会議が始まると、この画面に代理人どうしのやり取りが流れます。あなたの番が来たら、画面上部の帯' + (window.Notification && !window.PROTO ? 'と通知' : '') + 'でお知らせします。'),
+          h('li', {}, '預けた内容は、会議が始まる前ならいつでも直せます。'),
+          notJoined ? h('li', {}, isLeader() ? `まだ参加していない人が${notJoined}人います。「設定・招待」の招待コードを送ってください。` : `まだ参加していない人が${notJoined}人います。幹事が招待コードを送るのを待っています。`) : null
+        )
+      ),
+      h(
+        'div',
+        { class: 'row', style: 'margin-top:12px;flex-wrap:wrap' },
+        inRoom ? h('button', { class: 'btn small', onclick: () => { S.tab = 'meeting'; render(); } }, '「② 会議と結果」で様子を見る') : h('button', { class: 'btn small', onclick: () => { S.tab = 'room'; render(); } }, '預けた内容を見直す・手直しする'),
+        yet.length || notJoined ? h('button', { class: 'btn ghost small', onclick: remind }, 'まだの人へのお願い文をコピー') : null
+      )
+    );
+  }
+
   function viewMeeting() {
     const snap = S.snap;
     const st = state();
@@ -900,6 +1207,8 @@
         : null
     );
     if (st.phase === 'collecting') {
+      const wc = waitCard(false);
+      if (wc) wrap.append(wc);
       wrap.append(statusCard);
       wrap.append(topicCard());
     }
@@ -915,28 +1224,44 @@
         h(
           'div',
           { class: 'card rec', id: 'sec-rec' },
-          h('h2', {}, st.phase === 'decided' ? '決まった案と理由' : `推薦案（第${st.round}回の議論）`),
-          h('div', { class: 'big' }, top.title, top.origin === 'merged' ? h('span', { class: 'tag mix' }, '合体案') : null, top.origin === 'ai' ? h('span', { class: 'tag new' }, 'AIの新案') : null),
-          h('div', {}, top.summary),
-          (() => {
-            const tt = (rec.table || []).find((x) => x.candId === rec.topId);
-            return tt && tt.total !== undefined ? h('div', { class: 'pts' }, pointsText(tt)) : null;
-          })(),
-          h('h3', {}, 'なぜこの案か'),
-          h('div', { class: 'reason' }, paras(rec.reason)),
-          rec.tie && snap.cand[rec.runnerUpId] ? h('div', { class: 'q', style: 'margin-top:10px' }, h('p', {}, `「${snap.cand[rec.runnerUpId].title}」と評価が並んでいます。${rec.conflict ? '対立点：' + rec.conflict : ''}`)) : null,
-          h('h3', {}, '承認'),
-          approvalRow(st),
-          st.phase === 'review' && iAmIn
-            ? h(
-                'div',
-                {},
-                h('div', { class: 'row', style: 'margin-top:12px;align-items:center' }, h('button', { class: 'btn', disabled: !!S.busy || myOk || running, onclick: approve }, myOk ? '承認済み' : 'この案を承認する')),
-                h('label', {}, '承認せず一言返す'),
-                draftArea('comment', { placeholder: '例：方向はいいけど、ターゲットは高校生じゃなくて大学生にしたい' }),
-                h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', disabled: !!S.busy || running, onclick: () => tellAgent('comment') }, '代理人に伝えて議論をやり直す'))
-              )
-            : null,
+          h(
+            'div',
+            { class: 'recgrid' },
+            h(
+              'div',
+              { class: 'recmain' },
+              h('div', { class: 'eyebrow' }, `代理人たちの推薦案（第${st.round}回の議論）`),
+              h('div', { class: 'big' }, top.title, top.origin === 'merged' ? h('span', { class: 'tag mix' }, '合体案') : null, top.origin === 'ai' ? h('span', { class: 'tag new' }, 'AIの新案') : null),
+              h('div', { class: 'recsum' }, top.summary),
+              scoreTiles(rec, top),
+              h('h3', {}, 'なぜこの案か'),
+              h('div', { class: 'reason' }, paras(rec.reason)),
+              rec.tie && snap.cand[rec.runnerUpId] ? h('div', { class: 'q', style: 'margin-top:10px' }, h('p', {}, `「${snap.cand[rec.runnerUpId].title}」と評価が並んでいます。${rec.conflict ? '対立点：' + rec.conflict : ''}`)) : null
+            ),
+            h(
+              'div',
+              { class: 'recside' },
+              st.phase === 'review' && iAmIn && !myOk ? h('span', { class: 'pill' }, 'あなたの番') : null,
+              h('div', { class: 'todo-t' }, myOk ? 'あなたは承認済みです' : iAmIn ? 'この案でいいですか？' : '承認の状況'),
+              h('div', { class: 'hint' }, '全員が承認すると決定です。'),
+              st.phase === 'review' && iAmIn
+                ? [
+                    h('button', { class: 'btn big block', disabled: !!S.busy || myOk || running, onclick: approve }, myOk ? '承認済み' : 'この案を承認する'),
+                    (S.open = S.open || {}).say
+                      ? h(
+                          'div',
+                          {},
+                          h('label', { for: 'sayback', style: 'margin-top:4px' }, '承認せず一言返す'),
+                          draftArea('comment', { id: 'sayback', placeholder: '例：方向はいいけど、ターゲットは高校生じゃなくて大学生にしたい' }),
+                          h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', onclick: () => { S.open.say = false; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy || running, onclick: () => tellAgent('comment') }, '代理人に伝えて議論をやり直す'))
+                        )
+                      : h('button', { class: 'btn ghost block', disabled: !!S.busy || running, onclick: () => { S.open.say = true; render(); } }, '承認せず、一言返す'),
+                  ]
+                : null,
+              approvalRow(st),
+              protoApproveHelp(st)
+            )
+          ),
           (() => {
             S.open = S.open || {};
             const d = h(
@@ -944,6 +1269,7 @@
               { class: 'more', open: !!S.open.recmore },
               h('summary', {}, 'くわしく見る（案の中身・誰の意見が効いたか・実装の進め方）'),
               partsView(top),
+              feasView(top, true),
               rec.influences && rec.influences.length ? h('div', {}, h('h3', {}, '誰のどの意見が効いたか'), h('ul', { class: 'plain' }, rec.influences.map((i) => h('li', {}, h('b', {}, i.name + '： '), i.point)))) : null,
           rec.plan && (rec.plan.steps || (rec.plan.roles || []).length)
             ? h('div', {}, h('h3', {}, '実装の進め方（案）'), rec.plan.steps ? h('div', { style: 'line-height:1.7' }, rec.plan.steps) : null, (rec.plan.roles || []).length ? h('ul', { class: 'plain' }, rec.plan.roles.map((r) => h('li', {}, h('b', {}, r.name + '： '), r.role))) : null)
@@ -973,6 +1299,7 @@
           c.summary ? h('div', { style: 'margin-top:4px' }, c.summary) : null,
           partsView(c),
           c.why ? h('div', { class: 'hint', style: 'margin-top:6px' }, (c.origin === 'ai' ? 'この案を足した理由：' : '組み合わせの狙い：') + c.why) : null,
+          feasView(c, false),
           t && t.marks && t.marks.length
             ? h('div', { class: 'fit' }, h('b', {}, '評価基準ごとの採点（進行役AI）'), h('div', { class: 'marks' }, t.marks.map((m) => h('span', { class: 'mk s' + m.score }, `${m.name}${m.weight !== 1 ? ' ×' + m.weight : ''}：${m.score}/5`))), t.comment ? h('div', { class: 'hint' }, t.comment) : null)
             : null,
@@ -1008,7 +1335,7 @@
         false,
         msgs.length
           ? h('div', { class: 'log' }, msgs.map(msgRow))
-          : h('div', { class: 'hint' }, 'まだ会議は始まっていません。全員が個室で考えを預けると、代理人どうしの会議が始まります。'),
+          : h('div', { class: 'hint' }, 'まだ会議は始まっていません。全員が「① 考えを預ける」で考えを預けると、代理人どうしの会議が始まります。'),
         st.phase === 'review' || st.phase === 'decided'
           ? h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', disabled: !!S.busy || running, onclick: () => startMeeting('full') }, '最初から会議をやり直す'))
           : null
@@ -1021,9 +1348,21 @@
   // はじめの画面（会議を作る／招待コードで参加する）と、参加後の設定
   const INVITE_PREFIX = 'AIDK1.';
   const encodeInvite = (o) => INVITE_PREFIX + btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  // 短い招待コード: 会議の番号そのもの（8文字。まぎらわしい 0・1・I・O は使わない）。接続先はアプリに入っているものを使う
+  const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const SHORT_RE = /^[A-HJ-NP-Z2-9]{8}$/;
+  const newRoomCode = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => CODE_CHARS[b % 32]).join('');
+  const showCode = (r) => r.slice(0, 4) + '-' + r.slice(4);
+  const sameDb = (u, k) => !!S.cfg.dbDefault && S.cfg.dbDefault.url === u && S.cfg.dbDefault.key === k;
   function decodeInvite(text) {
     const t = String(text || '').replace(/\s+/g, '');
-    if (!t.startsWith(INVITE_PREFIX)) throw new Error('招待コードの形が違います。「AIDK1.」で始まる文字列をそのまま貼り付けてください。');
+    if (!t.startsWith(INVITE_PREFIX)) {
+      // 全角で貼られたり、ハイフンが抜けたりしていても読む
+      const c = t.normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!SHORT_RE.test(c)) throw new Error('招待コードの形が違います。「K7M2-9QXD」のような8文字を入れてください（0・1・I・O は使いません）。');
+      if (!S.cfg.dbDefault) throw new Error('このアプリには会議の接続先が入っていないので、短い招待コードは使えません。幹事に長い招待コード（AIDK1.…）を送ってもらってください。');
+      return { r: c, u: S.cfg.dbDefault.url, k: S.cfg.dbDefault.key };
+    }
     try {
       const o = JSON.parse(decodeURIComponent(escape(atob(t.slice(INVITE_PREFIX.length).replace(/-/g, '+').replace(/_/g, '/')))));
       if (!o || !o.r) throw new Error('no room');
@@ -1032,7 +1371,8 @@
       throw new Error('招待コードを読み取れませんでした。もう一度コピーして貼り付けてください。');
     }
   }
-  const inviteCode = () => encodeInvite({ r: S.cfg.room, u: S.cfg.supabaseUrl || '', k: S.cfg.supabaseKey || '' });
+  const isShort = () => SHORT_RE.test(S.cfg.room || '') && sameDb(S.cfg.supabaseUrl, S.cfg.supabaseKey);
+  const inviteCode = () => (isShort() ? showCode(S.cfg.room) : encodeInvite({ r: S.cfg.room, u: S.cfg.supabaseUrl || '', k: S.cfg.supabaseKey || '' }));
   const val = (id) => ($(id) ? $(id).value.trim() : '');
   const field = (id, label, attrs, hint) => [h('label', { for: id }, label), attrs && attrs.rows ? h('textarea', { id, ...attrs }) : h('input', { id, type: 'text', ...attrs }), hint ? h('div', { class: 'hint' }, hint) : null];
   const fail = (msg) => {
@@ -1041,7 +1381,7 @@
   };
   const aiFields = (prefix) => [
     h('h3', { style: 'margin-top:20px' }, 'AI'),
-    field(prefix + 'key', 'Claude APIキー（任意）', { type: 'password', placeholder: S.cfg.hasApiKey ? '設定済み（変えるときだけ入力）' : 'sk-ant-…' }, 'このPCにだけ保存されます。キーがあると、個室で代理人と会話でき、このアプリが会議を進められます。'),
+    field(prefix + 'key', 'Claude APIキー（任意）', { type: 'password', placeholder: !S.cfg.hasApiKey && S.cfg.serverAi ? '入力不要（サーバー経由でAIを使います）' : S.cfg.keyBundled ? '入力不要（アプリに入っているキーを使います）' : S.cfg.hasApiKey ? '設定済み（変えるときだけ入力）' : 'sk-ant-…' }, S.cfg.keyBundled ? 'このアプリにはAPIキーがあらかじめ入っているので、入力しなくてもAIが動きます。自分のキーを使いたいときだけ入力してください。' : 'このPCにだけ保存されます。キーがあると、個室で代理人と会話でき、このアプリが会議を進められます。'),
     h('label', { class: 'check' }, h('input', { id: prefix + 'demo', type: 'checkbox', checked: !!S.cfg.demo }), ' 見本モード：APIキーなしで、決まった見本の応答で画面を試す'),
     h('div', { class: 'hint' }, '見本モードの応答は本物のAIではありません。画面の流れを費用なしで確かめるためのものです。'),
   ];
@@ -1050,7 +1390,9 @@
     const name = val('c-name');
     const theme = val('c-theme');
     if (!name || !theme) return fail('あなたの名前とテーマを入力してください。');
-    const patch = { name, room: 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), supabaseUrl: val('c-surl'), supabaseKey: val('c-skey'), demo: $('c-demo').checked };
+    const patch = { name, room: '', supabaseUrl: val('c-surl'), supabaseKey: val('c-skey'), demo: $('c-demo').checked };
+    // アプリに入っている接続先で作る会議は、番号（8文字）がそのまま招待コードになる
+    patch.room = sameDb(patch.supabaseUrl, patch.supabaseKey) ? newRoomCode() : 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     if (val('c-key')) patch.apiKey = val('c-key');
     if (patch.supabaseUrl || patch.supabaseKey) {
       // 別々のPCから入れる会議にするときは、先に読み書きできるか確かめる
@@ -1115,7 +1457,7 @@
     }
     S.startMode = '';
     S.tab = 'room';
-    S.notice = `「${S.snap.room.main.theme || '会議'}」に参加しました。個室で考えを預けてください。`;
+    S.notice = `「${S.snap.room.main.theme || '会議'}」に参加しました。「① 考えを預ける」で、代理人に考えを話してください。`;
     render();
   }
 
@@ -1129,18 +1471,31 @@
           'div',
           { class: 'card' },
           h('h2', {}, '会議を作る（幹事）'),
-          h('div', { class: 'hint' }, 'ここで入れた内容は、参加したメンバー全員に共有されます。あとから会議室で直せます。'),
+          h('div', { class: 'hint' }, 'ここで入れた内容は、参加したメンバー全員に共有されます。あとから「② 会議と結果」で直せます。'),
           field('c-name', 'あなたの名前', { value: S.cfg.name || '', placeholder: '例：りょうま' }),
           field('c-theme', 'テーマ（何を決める会議か）', { placeholder: '例：かゆいところに手が届くアプリ' }),
           field('c-criteria', '評価基準（1行に1つ。重みを付けたい基準は、行の最後に「×2」）', { rows: 4, placeholder: 'テーマに合っているか\n新しさがあるか ×2\n完成度・実際に動くか\nプレゼンで伝わるか' }, '点数の70点分は、この基準ごとの採点で決まります。空欄だと「テーマに合っているか」だけで採点します。'),
           field('c-cond', '締切・条件（任意）', { placeholder: '例：3人チーム、開発期間は7日間、11/18締切' }),
           field('c-size', 'メンバーの人数（幹事を含む）', { type: 'number', min: '2', max: '12', value: '3' }, 'この人数が預け終わると、会議が自動で始まります。'),
           aiFields('c-'),
-          h('h3', { style: 'margin-top:20px' }, '共有データベース（任意）'),
-          h('div', { class: 'hint' }, '招待コードを送って別のPCから参加してもらうには、ここにSupabaseのURLとキーを入れます。入れておくと、招待コードに接続先が入るので、メンバーは何も設定せずに参加できます。空欄のままだと、このPCの中だけで動きます。作り方は README.md にあります（5分ほど）。'),
-          field('c-surl', 'Project URL', { value: S.cfg.supabaseUrl || (S.cfg.dbDefault || {}).url || '', placeholder: 'https://xxxx.supabase.co' }),
-          field('c-skey', 'APIキー（publishable または anon）', { value: S.cfg.supabaseKey || (S.cfg.dbDefault || {}).key || '', placeholder: 'sb_publishable_…' }),
-          S.cfg.dbDefault ? h('div', { class: 'hint' }, 'このPCに保存してある接続先を入れてあります。このまま作ると、招待コードで別のPCから参加できる会議になります。「このPCだけ」で試すときは、2つの欄を空にしてください。') : null,
+          (() => {
+            const fields = [
+              field('c-surl', 'Project URL', { value: S.cfg.dbDefault ? S.cfg.dbDefault.url : S.cfg.supabaseUrl || '', placeholder: 'https://xxxx.supabase.co' }),
+              field('c-skey', 'APIキー（publishable または anon）', { value: S.cfg.dbDefault ? S.cfg.dbDefault.key : S.cfg.supabaseKey || '', placeholder: 'sb_publishable_…' }),
+            ];
+            if (S.cfg.dbDefault) {
+              // 接続先はアプリに入っているので、ふだんは見せない
+              return [
+                h('div', { class: 'hint', style: 'margin-top:16px' }, '会議を作ると、8文字の招待コードができます。メンバーはそのコードだけで、別のPCから参加できます。'),
+                h('details', { class: 'more', id: 'c-more' }, h('summary', {}, '接続先を変える（ふつうは不要）'), h('div', { class: 'hint', style: 'margin-top:8px' }, '自分のSupabaseを使うときだけ書き換えます（招待コードは長い形式になります）。2つとも空にすると、このPCの中だけで試す会議になります。'), fields),
+              ];
+            }
+            return [
+              h('h3', { style: 'margin-top:20px' }, '共有データベース（任意）'),
+              h('div', { class: 'hint' }, '招待コードを送って別のPCから参加してもらうには、ここにSupabaseのURLとキーを入れます。空欄のままだと、このPCの中だけで試す会議になります（同じPCで別人として起動して試せます）。'),
+              fields,
+            ];
+          })(),
           h('div', { class: 'row end', style: 'margin-top:16px' }, back, h('button', { class: 'btn', onclick: createMeeting }, '会議を作る'))
         )
       );
@@ -1154,9 +1509,10 @@
           { class: 'card' },
           h('h2', {}, '招待コードで参加する'),
           field('j-name', 'あなたの名前', { value: S.cfg.name || '', placeholder: '例：あおい' }),
-          field('j-code', '招待コード', { rows: 3, placeholder: 'AIDK1.…（幹事から送られてきた文字列を貼り付け）' }),
-          aiFields('j-'),
-          h('div', { class: 'hint', style: 'margin-top:8px' }, 'APIキーも見本モードも無しで参加できます。その場合は、入力フォームで考えを預け、会議は幹事のアプリが進めます。'),
+          field('j-code', '招待コード', { placeholder: '例：K7M2-9QXD（幹事から送られてきた8文字）', autocomplete: 'off', spellcheck: 'false' }),
+          h('div', { class: 'hint', style: 'margin-top:8px' }, '入力はこの2つだけです。参加すると、あなたの代理人と1対1で話す画面が開きます。'),
+          // ふだんは使わない項目（自分のAPIキー・見本モード）は畳んでおく
+          h('details', { class: 'more', id: 'j-more' }, h('summary', {}, '詳しい設定（ふつうは不要）'), aiFields('j-'), h('div', { class: 'hint', style: 'margin-top:8px' }, '何も入れなくても参加できます。AIは会議のサーバー経由で動きます（サーバーが無い会議では、入力フォームで考えを預け、会議は幹事のアプリが進めます）。')),
           h('div', { class: 'row end', style: 'margin-top:16px' }, back, h('button', { class: 'btn', onclick: joinMeeting }, '参加する'))
         )
       );
@@ -1164,12 +1520,25 @@
     return h(
       'div',
       { class: 'wrap' },
-      h('div', { class: 'hero' }, h('h2', {}, '集まらなくても決まる、AI代理人会議'), h('div', {}, 'メンバー1人に1体ずつAIの代理人が付き、「どの案にするか」を決める会議に本人の代わりに出ます。')),
+      h(
+        'div',
+        { class: 'hero2' },
+        h('div', { class: 'eyebrow' }, '集まる時間が合わないチームへ'),
+        h('h2', { class: 'herotitle' }, 'AIの代理人が、あなたのかわりに', h('br', {}), '「どの案にするか」を話し合います'),
+        h('p', { class: 'herolead' }, 'あなたは代理人に考えを話すだけ。会議は代理人どうしで進みます。'),
+        h(
+          'div',
+          { class: 'stepcards' },
+          [[1, '考えを預ける', '自分の代理人に、案と本音を話します。', '約5分'], [2, '代理人どうしが会議', '全員が預けると自動で始まり、推薦案が出ます。', '1〜2分・見ているだけ'], [3, '承認して決定', '推薦案を見て、全員が承認すれば決まりです。', '約1分']].map(([n, title, text, time]) =>
+            h('div', { class: 'stepcard' }, h('div', { class: 'num' }, String(n)), h('div', { class: 'st-t' }, title), h('div', { class: 'st-x' }, text), h('div', { class: 'st-m' }, time))
+          )
+        )
+      ),
       h(
         'div',
         { class: 'choices' },
-        h('div', { class: 'card choice' }, h('h2', {}, '会議を作る'), h('div', { class: 'hint' }, '幹事として、テーマ・評価基準・人数を決めて会議を作ります。できた招待コードをメンバーに送ります。'), h('button', { class: 'btn', onclick: () => { S.startMode = 'create'; render(); } }, '幹事として始める')),
-        h('div', { class: 'card choice' }, h('h2', {}, '招待コードで参加する'), h('div', { class: 'hint' }, '幹事から送られてきた招待コードを貼り付けて、会議に参加します。APIキーは無くても参加できます。'), h('button', { class: 'btn ghost', onclick: () => { S.startMode = 'join'; render(); } }, 'メンバーとして参加する'))
+        h('div', { class: 'card choice' }, h('h2', {}, '会議を作る'), h('div', { class: 'hint' }, '幹事として、テーマ・評価基準・人数を決めて会議を作ります。できた招待コードをメンバーに送ります。'), h('button', { class: 'btn big', onclick: () => { S.startMode = 'create'; render(); } }, '幹事として始める')),
+        h('div', { class: 'card choice' }, h('h2', {}, '招待コードで参加する'), h('div', { class: 'hint' }, '幹事から送られてきた招待コードを貼り付けて、会議に参加します。入力は名前と招待コードだけです。'), h('button', { class: 'btn ghost big', onclick: () => { S.startMode = 'join'; render(); } }, 'メンバーとして参加する'))
       )
     );
   }
@@ -1178,7 +1547,7 @@
     if (!ready() || S.startMode) return viewStart();
     const r = roomInfo();
     const leader = (S.snap.member[r.leaderId] || {}).name || '';
-    const ai = S.cfg.hasApiKey ? 'APIキーあり（代理人と会話でき、このアプリが会議を進められます）' : S.cfg.demo ? '見本モード（決まった見本の応答。APIは呼びません）' : 'なし（フォームで預け、会議は幹事のアプリが進めます）';
+    const ai = !S.cfg.hasApiKey && !S.cfg.demo && S.cfg.serverAi ? 'サーバー経由（APIキーは不要。代理人と会話でき、このアプリが会議を進められます）' : S.cfg.keyBundled ? 'アプリに入っているAPIキーを使用（代理人と会話でき、このアプリが会議を進められます）' : S.cfg.hasApiKey ? 'APIキーあり（代理人と会話でき、このアプリが会議を進められます）' : S.cfg.demo ? '見本モード（決まった見本の応答。APIは呼びません）' : 'なし（フォームで預け、会議は幹事のアプリが進めます）';
     const copy = async () => {
       try {
         await navigator.clipboard.writeText(inviteCode());
@@ -1191,7 +1560,7 @@
     const save = async () => {
       const name = val('s-name');
       if (!name) return fail('名前を入力してください。');
-      const patch = { name, model: val('s-model') || 'claude-sonnet-5-5', demo: $('s-demo').checked };
+      const patch = { name, model: val('s-model') || 'claude-sonnet-5-5', demo: $('s-demo').checked, webSearch: $('s-web').checked };
       if (val('s-key')) patch.apiKey = val('s-key');
       S.error = '';
       S.cfg = await api.saveConfig(patch);
@@ -1236,8 +1605,8 @@
         'div',
         { class: 'card' },
         h('h2', {}, '招待コード'),
-        h('div', { class: 'hint' }, 'この文字列をメンバーに送ります。メンバーはアプリの「招待コードで参加する」に貼り付けます。' + (S.cfg.sharedMode === 'supabase' ? '別のPCからも、このコードだけで同じ会議に入れます。コードには共有データベースの接続先が入っているので、チームの外には渡さないでください。' : '【注意】この会議は「このPCだけ」で作られているので、別のPCからは参加できません。別のPCから入れるようにするには、SupabaseのURLとキーを入れて会議を作り直してください。')),
-        h('textarea', { id: 's-invite', readonly: true, rows: 3, value: inviteCode(), onfocus: (e) => e.target.select() }),
+        h('div', { class: 'hint' }, isShort() ? 'この8文字をメンバーに伝えます。メンバーはアプリの「招待コードで参加する」に入れるだけで、別のPCからも同じ会議に入れます。コードを知っている人は会議に入れるので、チームの外には渡さないでください。' : S.cfg.sharedMode === 'supabase' ? 'この文字列をメンバーに送ります。メンバーはアプリの「招待コードで参加する」に貼り付けます。コードには共有データベースの接続先が入っているので、チームの外には渡さないでください。' : 'この会議は「このPCだけ」で作られているので、別のPCからは参加できません（同じPCで別人として起動して試す用です）。'),
+        isShort() ? h('input', { id: 's-invite', class: 'bigcode', type: 'text', readonly: true, value: inviteCode(), onfocus: (e) => e.target.select() }) : h('textarea', { id: 's-invite', readonly: true, rows: 3, value: inviteCode(), onfocus: (e) => e.target.select() }),
         h('div', { class: 'row end' }, h('button', { class: 'btn', onclick: copy }, '招待コードをコピー'))
       ),
       h(
@@ -1248,13 +1617,15 @@
         isLeader() ? field('s-size', 'メンバーの人数（幹事を含む）', { type: 'number', min: '2', max: '12', value: String(S.teamSize) }) : null,
         aiFields('s-'),
         field('s-model', 'モデル', { value: S.cfg.model || 'claude-sonnet-5-5' }, '例：claude-sonnet-5-5（標準）／claude-haiku-5-5（速くて安い）'),
+        h('label', { class: 'check', style: 'margin-top:14px' }, h('input', { id: 's-web', type: 'checkbox', checked: S.cfg.webSearch !== false }), ' 進行役AIが「技術的に作れるか」を調べるときに、Web検索を使う'),
+        h('div', { class: 'hint' }, 'APIキーがあるときだけ働きます。検索は1回の会議で数回までで、検索1回ごとに追加の費用がかかります。切ると、AIの知識だけで判断します。'),
         h('div', { class: 'row end', style: 'margin-top:16px' }, h('button', { class: 'btn', onclick: save }, '保存する'))
       ),
       h(
         'div',
         { class: 'card' },
         h('h2', {}, 'この会議から抜ける'),
-        h('div', { class: 'hint' }, 'この会議を一覧から外します。会議のデータは残るので、招待コードを控えておけば、また参加できます。ほかの会議には、左の一覧からいつでも切り替えられます。'),
+        h('div', { class: 'hint' }, 'この会議を一覧から外します。会議のデータは残るので、招待コードを控えておけば、また参加できます。ほかの会議には、画面上部の「会議：」からいつでも切り替えられます。'),
         h('div', { class: 'row end' }, h('button', { class: 'btn ghost', onclick: leave }, 'この会議から抜ける'))
       )
     );
@@ -1282,20 +1653,28 @@
     S.dirty = false;
     if (!ready()) S.tab = 'settings';
     const qn = myTodos().filter((t) => t.urgent && t.tab === 'meeting').length;
-    const tabs = ready() ? [['room', '個室'], ['meeting', '会議室'], ['settings', '設定']] : [['settings', 'はじめる']];
     renderSide();
+    const stNow = S.snap ? state() : { phase: 'collecting' };
+    const deposited = !!(S.snap && S.snap.brief[S.cfg.memberId]);
+    const decidedNow = stNow.phase === 'decided';
+    const onTab = S.startMode ? 'settings' : S.tab;
+    const stepBtn = (id, n, label, done) =>
+      h('button', { class: 'stepb' + (onTab === id ? ' on' : '') + (done ? ' done' : ''), 'aria-current': onTab === id ? 'step' : null, disabled: !ready(), onclick: () => { S.tab = id; S.startMode = ''; render(); } }, h('span', { class: 'n' }, done && onTab !== id ? '✓' : String(n)), h('span', {}, label), id === 'meeting' && qn ? h('span', { class: 'dot' }, qn) : null);
     $('nav').replaceChildren(
-      ...tabs.map(([id, label]) =>
-        h('button', { class: S.tab === id && !(ready() && S.startMode) ? 'on' : '', disabled: !ready() && id !== 'settings', onclick: () => { S.tab = id; if (ready()) S.startMode = ''; render(); } }, label, id === 'meeting' && qn ? h('span', { class: 'dot' }, qn) : null)
-      )
+      stepBtn('room', 1, '考えを預ける', deposited),
+      h('span', { class: 'stepline' }),
+      stepBtn('meeting', 2, '会議と結果', decidedNow),
+      h('span', { class: 'stepline' }),
+      h('span', { class: 'stepb static' + (decidedNow ? ' done' : '') }, h('span', { class: 'n' }, decidedNow ? '✓' : '3'), h('span', {}, '決定'))
     );
     $('who').replaceChildren(
       ...[
-      ready() && roomInfo().theme ? h('span', { class: 'roomname', title: roomInfo().theme }, '# ' + roomInfo().theme) : null,
-      ready() ? `${S.cfg.name}（${isLeader() ? '幹事' : 'メンバー'}）` : '',
-      S.cfg.appVersion ? h('span', { class: 'badge' }, 'v' + S.cfg.appVersion) : null,
-      S.cfg.demo && !S.cfg.hasApiKey ? h('span', { class: 'badge warn', title: 'AIの応答は決まった見本です。APIは呼びません。' }, '見本モード') : null,
-      ready() ? h('span', { class: 'badge' + (S.cfg.sharedMode === 'supabase' ? '' : ' warn') }, S.cfg.sharedMode === 'supabase' ? '共有中' : 'このPCだけ') : null,
+        ready() ? h('span', { class: 'whoname' }, `${S.cfg.name}（${isLeader() ? '幹事' : 'メンバー'}）`) : null,
+        !S.cfg.hasApiKey && !S.cfg.demo && S.cfg.serverAi ? h('span', { class: 'badge', title: 'AIは会議のサーバー経由で動きます。このPCにAPIキーは要りません。' }, 'AI：サーバー経由') : null,
+        S.cfg.demo && !S.cfg.hasApiKey ? h('span', { class: 'badge warn', title: 'AIの応答は決まった見本です。APIは呼びません。' }, '見本モード') : null,
+        ready() ? h('span', { class: 'badge' + (S.cfg.sharedMode === 'supabase' ? '' : ' warn') }, S.cfg.sharedMode === 'supabase' ? '共有中' : 'このPCだけ') : null,
+        ready() ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { S.tab = 'settings'; S.startMode = ''; render(); $('view').scrollTop = 0; } }, '設定・招待') : null,
+        S.cfg.appVersion ? h('span', { class: 'ver', title: 'このアプリのバージョン' }, 'v' + S.cfg.appVersion) : null,
       ].filter(Boolean)
     );
     renderStatus();
@@ -1324,13 +1703,14 @@
       const last = st.lastRunAt || 0;
       const pending = ids.some((id) => (snap.brief[id].updates || []).some((u) => u.at > last) && !Object.values(snap.question).some((q) => q.memberId === id && q.status === 'open'));
       if (pending) mode = 'rerun';
+      if (ids.some((id) => (snap.brief[id].editedAt || 0) > last)) mode = 'full'; // 案を手直しして預け直した人がいる
     }
     if (!mode) return;
     // 同じ状況では1回しか自動で試さない（失敗したまま繰り返さないため）
-    const sig = [mode, st.round || 0, ids.join(','), ids.map((id) => (snap.brief[id].updates || []).length).join(',')].join(':');
+    const sig = [mode, st.round || 0, ids.join(','), ids.map((id) => (snap.brief[id].updates || []).length + '/' + (snap.brief[id].editedAt || 0)).join(',')].join(':');
     if (S.autoSig === sig) return;
     S.autoSig = sig;
-    S.notice = mode === 'full' ? '全員が預けたので、会議を始めました。' : '新しい答えが届いたので、議論をやり直しています。';
+    S.notice = mode === 'full' ? (st.phase === 'review' ? '案を預け直した人がいるので、会議をやり直しています。' : '全員が預けたので、会議を始めました。') : '新しい答えが届いたので、議論をやり直しています。';
     run('meeting', () => Engine.runMeeting(ctx(), { mode }));
   }
 
@@ -1342,8 +1722,16 @@
     if (!live && Date.now() - lastPoll < 3800) return;
     lastPoll = Date.now();
     const before = JSON.stringify(S.snap);
+    const wasRunning = isRunning();
     await refresh();
     autoRun();
+    if (!wasRunning && isRunning() && S.tab === 'room' && S.snap.brief[S.cfg.memberId]) {
+      const el = document.activeElement;
+      if (!(el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') && el.value)) {
+        S.tab = 'meeting';
+        S.notice = '代理人どうしの会議が始まりました。';
+      }
+    }
     if (S.busy || JSON.stringify(S.snap) === before) return;
     const a = document.activeElement;
     const typing = a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && $('view').contains(a);

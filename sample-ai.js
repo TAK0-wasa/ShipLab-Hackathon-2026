@@ -85,6 +85,22 @@ function merge(user) {
   });
 }
 
+function feas(user) {
+  const cands = parseCands(user);
+  const verdicts = ['ok', 'partial', 'partial', 'hard'];
+  return JSON.stringify({
+    statement: '【見本】各案について、必要な技術と、締切までに作れる範囲を検討しました。\n\n1つ目の案は目玉機能まで作れそうです。ほかの案は、範囲を絞れば見せられる形になります。',
+    items: cands.map((c, i) => ({
+      candId: c.id,
+      verdict: verdicts[i % verdicts.length],
+      needs: '画面の作成と、データの保存先が必要です（見本の定型文）。',
+      mvp: `「${c.title}」の一番小さく動く形までです（見本の定型文）。`,
+      later: '細かい設定や見た目の作り込みは後回しにします。',
+      risk: '見本モードのため、実際のAPIやライブラリは未確認です。',
+    })),
+  });
+}
+
 function judge(user) {
   const cands = parseCands(user);
   const n = ((user.split('【評価基準（この番号順に採点）】')[1] || '').split('\n【')[0].match(/^\d+\. /gm) || []).length || 1;
@@ -120,6 +136,7 @@ module.exports = async function sampleAi({ system, messages }) {
   if (task === 'brief') return brief(system, user);
   if (task === 'round1' || task === 'round2' || task === 'rerun') return agent(task, system, user);
   if (task === 'merge') return merge(user);
+  if (task === 'feas') return feas(user);
   if (task === 'judge') return judge(user);
   return explain(user);
 };

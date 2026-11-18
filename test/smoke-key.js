@@ -11,6 +11,7 @@ app.setPath('userData', path.join(tmp, 'user'));
 const keyFile = path.join(tmp, 'api-key.local.json');
 process.env.KAWARINI_KEY_FILE = keyFile;
 fs.writeFileSync(keyFile, JSON.stringify({ apiKey: 'sk-ant-test-bundled-000' }));
+process.env.KAWARINI_DB = process.env.KAWARINI_DB || 'none'; // アプリに入っている接続先は使わない
 require('../main.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
