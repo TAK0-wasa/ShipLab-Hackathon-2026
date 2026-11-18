@@ -1,4 +1,4 @@
-// かわりに会議: AIをサーバー経由で呼ぶための Supabase Edge Function
+// MeetForMe: AIをサーバー経由で呼ぶための Supabase Edge Function
 // ClaudeのAPIキーはこのサーバーだけが持ち（Secrets の ANTHROPIC_API_KEY）、アプリには渡らない。
 // 設定: Edge Functions で「claude」という名前で作成し、「Verify JWT」を切る。Secrets に ANTHROPIC_API_KEY を登録する。
 // 使いすぎ防止のため、先に supabase_setup.sql（relay_take）を実行しておく。

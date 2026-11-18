@@ -11,7 +11,7 @@ const version = JSON.parse(read('package.json')).version;
 const wording = (s) => s.replace(/このPC/g, 'この端末').replace(/別々のPC/g, '別々の端末').replace(/別のPC/g, '別の端末').replace(/同じPC/g, '同じ端末');
 const sample = `(function () { var module = { exports: {} };\n${read('sample-ai.js')}\nwindow.sampleAi = module.exports; })();`;
 const api = read('web/web-api.js').replace('__APP_VERSION__', version);
-const head = `// かわりに会議 Web版 v${version}（node web/build.js で作成。直接は書き換えない）\n`;
+const head = `// MeetForMe Web版 v${version}（node web/build.js で作成。直接は書き換えない）\n`;
 fs.writeFileSync(path.join(__dirname, 'app.js'), head + [sample, api, read('src/engine.js'), wording(read('src/app.js'))].join('\n;\n'), 'utf8');
 
 let html = read('src/index.html');
@@ -22,6 +22,6 @@ html = wording(html).replace(tags, () => `<script src="app.js?v=${version}"></sc
 const csp = /<meta http-equiv="Content-Security-Policy"[^>]*>/;
 if (!csp.test(html)) throw new Error('src/index.html に Content-Security-Policy がありません');
 html = html.replace(csp, `<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https:; base-uri 'none'; form-action 'none'">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<meta name="robots" content="noindex">`);
-html = html.replace('<head>', `<head>\n<!-- かわりに会議 Web版 v${version}（node web/build.js で作成。直接は書き換えない） -->`);
+html = html.replace('<head>', `<head>\n<!-- MeetForMe Web版 v${version}（node web/build.js で作成。直接は書き換えない） -->`);
 fs.writeFileSync(path.join(__dirname, 'index.html'), html, 'utf8');
 console.log(`web/index.html と web/app.js を作りました（v${version}）`);

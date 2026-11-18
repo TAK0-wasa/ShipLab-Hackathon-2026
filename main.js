@@ -1,4 +1,4 @@
-// かわりに会議 — Electron メインプロセス
+// MeetForMe — Electron メインプロセス
 // 役割: ウィンドウ表示 / 設定と個室データのローカル保存 / Claude API と共有ストア(Supabase)への通信
 const { app, BrowserWindow, ipcMain, net, safeStorage, session, shell } = require('electron');
 const path = require('path');
@@ -499,7 +499,7 @@ function createWindow() {
     height: 820,
     minWidth: 900,
     minHeight: 600,
-    title: 'かわりに会議' + (profile ? `（${profile}）` : ''),
+    title: 'MeetForMe' + (profile ? `（${profile}）` : ''),
     backgroundColor: '#f6f8f8',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

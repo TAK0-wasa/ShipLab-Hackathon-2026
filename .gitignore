@@ -2,3 +2,4 @@ node_modules/
 dist/
 shared-db.local.json
 api-key.local.json
+.vercel

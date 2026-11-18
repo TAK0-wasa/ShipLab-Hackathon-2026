@@ -1,4 +1,4 @@
-// かわりに会議 — Web版の土台
+// MeetForMe — Web版の土台
 // デスクトップ版の main.js / preload.js が受け持っている仕事（設定と個室データの保存、共有ストアとAIサーバーへの通信）を、
 // ブラウザの中だけで行う。画面（src/app.js）と会議の処理（src/engine.js）は、デスクトップ版と同じものをそのまま使う。
 // ・設定と代理人との会話は、このブラウザ（localStorage）にだけ保存する
@@ -92,6 +92,38 @@
     srvCache[u] = { ok, at: Date.now() };
     return ok;
   }
+  // ---------- 会議をサーバーで進める（関数「meeting」。入っていなければ、これまでどおり画面側で進める） ----------
+  const meetCache = {};
+  const meetUrl = (cfg) => serverUrl(cfg).replace(/claude$/, 'meeting');
+  const meetKnown = (cfg) => {
+    const u = meetUrl(cfg);
+    return !!(u && meetCache[u] && meetCache[u].ok);
+  };
+  async function probeMeeting(cfg) {
+    const u = meetUrl(cfg);
+    if (!u || cfg.demo) return false;
+    const hit = meetCache[u];
+    if (hit && Date.now() - hit.at < (hit.ok ? 300000 : 600000)) return hit.ok;
+    let ok = false;
+    try {
+      const res = await limit(fetch(u, { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify({ ping: true }) }), 4000);
+      const data = res.ok ? await res.json() : null;
+      ok = !!(data && data.ok && data.ready);
+    } catch (e) {}
+    meetCache[u] = { ok, at: Date.now() };
+    return ok;
+  }
+  async function kickMeeting() {
+    const cfg = loadConfig();
+    if (!cfg.room || !(await probeMeeting(cfg))) return { ok: false };
+    try {
+      const res = await limit(fetch(meetUrl(cfg), { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify({ room: cfg.room }) }), 15000);
+      const data = await res.json().catch(() => null);
+      return res.ok && data ? data : { ok: false, status: res.status };
+    } catch (e) {
+      return { ok: false };
+    }
+  }
   function publicConfig(cfg) {
     const { apiKey, rooms, ...rest } = cfg;
     const ua = navigator.userAgent || '';
@@ -101,6 +133,7 @@
       rooms: (rooms || []).map((r) => ({ room: r.room, title: r.title || '' })),
       hasApiKey: false,
       serverAi: serverKnown(cfg),
+      serverMeeting: meetKnown(cfg),
       dbDefault: dbDefault(),
       demo: !!cfg.demo,
       profile,
@@ -318,7 +351,7 @@
 
   const withProbe = async () => {
     const cfg = loadConfig();
-    await probeServer(cfg);
+    await Promise.all([probeServer(cfg), probeMeeting(cfg)]);
     return publicConfig(cfg);
   };
   window.WEB = true;
@@ -334,6 +367,7 @@
       return true;
     },
     llm: (req) => callClaude(req || {}),
+    kickMeeting: () => kickMeeting(),
     diagnose: () => diagnose(),
     wipeLocal: async () => wipeLocal(),
     testDb: (url, key) => testDb(url, key),

@@ -86,12 +86,12 @@ app.whenReady().then(async () => {
     await until(async () => !!(await js(`!!document.querySelector('#liveElapsed')`)), '会議中の経過時間が出ない', 15000);
     const e1 = await text('#liveElapsed'); await sleep(2200); const e2 = await text('#liveElapsed');
     if (!e2 || e1 === e2) throw new Error('経過時間が進まない: ' + e1 + ' → ' + e2);
-    await need('.livetime', ['段階め', '開始から', '数分が目安'], '会議中の時間の案内');
+    await need('.livetime', ['段階め', '開始から', 'あと約', '分で終わります'], '会議中の時間の案内');
     await shot('s4-live');
     await until(async () => (await text('#view')).includes('推薦案（第1回の議論）'), '推薦が出ない', 60000);
     await idle();
     await js(`document.querySelectorAll('details').forEach((d) => (d.open = true))`); await sleep(300);
-    await need('#view', ['/70 ＋ 支持 ', 'AIの新案', '実行記録（第1回：AIの呼び出し10回', '技術的に作れるか', 'AIの知識による判断（検索なし）', '【見本】', '新しさがあるか ×2：', '案のどの記述からこの点にしたか', '次点「', 'との差：', '点数からそのまま計算した内訳です'], '会議の結果');
+    await need('#view', ['/70 ＋ 支持 ', 'AIの新案', '実行記録（第1回：AIの呼び出し11回', '技術的に作れるか', 'AIの知識による判断（検索なし）', '【見本】', '新しさがあるか ×2：', '案のどの記述からこの点にしたか', '次点「', 'との差：', '点数からそのまま計算した内訳です'], '会議の結果');
     // 3.1 案の一覧は、1案1行の表（点数の高い順。推薦が1位。行を押すと詳細）
     const rows = JSON.parse(await js(`JSON.stringify([...document.querySelectorAll('details.crow')].map((d) => ({ no: d.querySelector('.cno').innerText, top: d.classList.contains('top'), score: (d.querySelector('.cscore b') || {}).innerText || '' })))`));
     if (rows.length < 4 || rows[0].no !== '1' || !rows[0].top || rows.filter((r) => r.top).length !== 1) throw new Error('案の表の並びがおかしい: ' + JSON.stringify(rows));

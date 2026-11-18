@@ -1,4 +1,4 @@
-// かわりに会議 — 画面
+// MeetForMe — 画面
 /* global Engine, api */
 (function () {
   const S = { cfg: {}, priv: {}, snap: null, tab: 'room', busy: '', progress: '', error: '', notice: '', drafts: {}, dirty: false, teamSize: 3 };
@@ -111,7 +111,7 @@
     if (S.todoInit && fresh.length) {
       try {
         if (canNotify() && (document.hidden || !document.hasFocus())) {
-          notifyUser('かわりに会議：あなたの番です', fresh[0].text);
+          notifyUser('MeetForMe：あなたの番です', fresh[0].text);
         }
       } catch (e) {}
     }
@@ -151,6 +151,7 @@
     S.drafts = {};
     S.open = {};
     S.editTopic = false;
+    S.takeLink = '';
     S.edit = null;
     S.formIdeas = 1;
     S.autoSig = '';
@@ -190,7 +191,7 @@
         const keys = urgent.map((t) => t.key).join('|');
         if (prev && keys && keys !== prev.keys) {
           try {
-            if (canNotify()) notifyUser('かわりに会議：あなたの番です', `「${roomTitle(r)}」${urgent[0].text}`);
+            if (canNotify()) notifyUser('MeetForMe：あなたの番です', `「${roomTitle(r)}」${urgent[0].text}`);
           } catch (e) {}
         }
         S.peek[r.room] = { n: urgent.length, keys, decided: (snap.state.main || {}).phase === 'decided' };
@@ -270,10 +271,102 @@
     return h('textarea', { ...attrs, value: S.drafts[key] || '', oninput: (e) => (S.drafts[key] = e.target.value) });
   }
 
-  async function savePriv() {
-    await api.savePrivate(S.cfg.room, S.priv);
+  // ---------- 端末の引き継ぎ ----------
+  // 代理人との会話と預かりメモは、ふだんはこの端末にだけある。「引き継ぎリンク」を作ると、それを暗号化して共有の保存先に置き、
+  // リンクを開いた別の端末で続きができる。鍵はリンクの中にだけあり、保存先には暗号文しか置かない（ほかのメンバーも運営者も読めない）
+  const WEB_BASE = 'https://meetforme.vercel.app/';
+  const b64enc = (buf) => {
+    const u = new Uint8Array(buf);
+    let t = '';
+    for (let i = 0; i < u.length; i += 8192) t += String.fromCharCode.apply(null, u.subarray(i, i + 8192));
+    return btoa(t).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+  const b64dec = (str) => Uint8Array.from(atob(String(str).replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+  const canSync = () => !!(window.crypto && crypto.subtle);
+  const syncCryptoKey = (k) => crypto.subtle.importKey('raw', b64dec(k), 'AES-GCM', false, ['encrypt', 'decrypt']);
+  function syncBody() {
+    const { syncKey, syncAt, ...rest } = S.priv;
+    return { ...rest, chat: (rest.chat || []).slice(-40) };
+  }
+  let syncTimer = null;
+  function queueSync() {
+    if (!S.priv || !S.priv.syncKey || !canSync()) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => pushSync().catch(() => {}), 800);
+  }
+  async function pushSync() {
+    if (!S.priv || !S.priv.syncKey || !canSync()) return false;
+    const room = S.cfg.room;
+    const key = await syncCryptoKey(S.priv.syncKey);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const at = Date.now();
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(syncBody())));
+    S.priv.syncAt = at;
+    await api.savePrivate(room, S.priv);
+    await api.store.put('priv', S.cfg.memberId, { v: 1, iv: b64enc(iv), ct: b64enc(ct), at });
+    return true;
+  }
+  // 別の端末で進んだ内容があれば取り込む（新しいほうが勝つ）
+  async function pullSync() {
+    const d = S.priv && S.priv.syncKey && S.snap && S.snap.priv && S.snap.priv[S.cfg.memberId];
+    if (!d || !(d.at > (S.priv.syncAt || 0)) || S.busy || !canSync()) return false;
+    try {
+      const key = await syncCryptoKey(S.priv.syncKey);
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64dec(d.iv) }, key, b64dec(d.ct));
+      const body = JSON.parse(new TextDecoder().decode(pt));
+      S.priv = { ...body, syncKey: S.priv.syncKey, syncAt: d.at };
+      if (!Array.isArray(S.priv.chat) || !S.priv.chat.length) S.priv.chat = [{ role: 'assistant', content: GREETING(S.cfg.name) }];
+      await api.savePrivate(S.cfg.room, S.priv);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  async function makeTakeLink() {
+    if (!canSync()) throw new Error('この環境では暗号化が使えないため、引き継ぎリンクを作れません。');
+    if (!S.priv.syncKey) S.priv.syncKey = b64enc(crypto.getRandomValues(new Uint8Array(32)));
+    await pushSync();
+    const o = { r: S.cfg.room, m: S.cfg.memberId, n: S.cfg.name, k: S.priv.syncKey };
+    if (!(S.cfg.dbDefault && S.cfg.dbDefault.url === S.cfg.supabaseUrl)) Object.assign(o, { u: S.cfg.supabaseUrl || '', s: S.cfg.supabaseKey || '' });
+    const base = window.WEB ? location.origin + location.pathname : WEB_BASE;
+    return base + '#take=' + b64enc(new TextEncoder().encode(JSON.stringify(o)));
+  }
+  // 引き継ぎリンクから開いたとき: 同じ人として会議に入り、暗号化された会話を取り込む
+  async function takeOver(code) {
+    let o;
+    try {
+      o = JSON.parse(new TextDecoder().decode(b64dec(code)));
+    } catch (e) {
+      o = null;
+    }
+    if (!o || !o.r || !o.m || !o.k) return fail('引き継ぎのリンクを読めませんでした。もう一度、元の端末でリンクを作り直してください。');
+    if (!window.WEB) return fail('引き継ぎのリンクは、ブラウザ（Web版）で開いてください。');
+    if ((S.cfg.rooms || []).length && S.cfg.memberId !== o.m) return fail('このブラウザは、すでに別の人として会議に参加しています。引き継ぐには、別のブラウザで開くか、先に「設定・招待」の「この端末のデータを消す」を行ってください。');
+    const db = o.u !== undefined ? { url: o.u, key: o.s || '' } : S.cfg.dbDefault || { url: '', key: '' };
+    S.cfg = await api.saveConfig({ memberId: o.m, name: o.n || S.cfg.name || '', room: o.r, supabaseUrl: db.url, supabaseKey: db.key });
+    const cur = (await api.getPrivate(o.r)) || {};
+    await api.savePrivate(o.r, { ...cur, syncKey: o.k, syncAt: cur.syncKey === o.k ? cur.syncAt || 0 : 0 });
+    resetView();
+    await enterRoom();
+    S.startMode = '';
+    S.tab = 'room';
+    S.notice = S.netError ? '' : 'この端末に引き継ぎました。続きから話せます。どちらの端末で進めても、もう一方に反映されます。';
   }
 
+  async function savePriv() {
+    await api.savePrivate(S.cfg.room, S.priv);
+    queueSync();
+  }
+
+  // 決定のあとは共有の保存先から本音を消している。決定が取り消されたら、この端末に残っている自分の預かりメモを預け直す
+  async function restoreBrief() {
+    const me = S.cfg && S.cfg.memberId;
+    const b = me && S.snap && S.snap.brief[me];
+    const st = (S.snap && S.snap.state && S.snap.state.main) || {};
+    if (!b || !b.scrubbed || st.phase === 'decided' || !S.priv || !S.priv.brief) return;
+    await api.store.put('brief', me, S.priv.brief);
+    S.snap.brief[me] = S.priv.brief;
+  }
   async function refresh() {
     try {
       S.snap = await Engine.snapshot(api.store);
@@ -285,6 +378,8 @@
         api.saveConfig({ roomTitle: room.theme }).then((c) => { if (c.room === S.cfg.room) S.cfg = c; renderSide(); });
       }
       S.netError = '';
+      await restoreBrief();
+      await pullSync();
     } catch (e) {
       S.netError = errText(e);
       if (!S.snap) S.snap = await Engine.snapshot({ all: async () => [] });
@@ -335,10 +430,11 @@
     render();
   }
 
-  function sendChat() {
-    const text = (S.drafts.chat || '').trim();
-    if (!text) return;
-    S.drafts.chat = '';
+  function sendChat(picked) {
+    const text = (typeof picked === 'string' ? picked : S.drafts.chat || '').trim();
+    if (!text || S.busy) return;
+    if (typeof picked !== 'string') S.drafts.chat = '';
+    S.priv.choices = [];
     S.priv.chat.push({ role: 'user', content: text });
     run('chat', async () => {
       await savePriv();
@@ -352,6 +448,7 @@
       const sp = Engine.splitCovered(reply);
       if (sp.covered) S.priv.covered = [...new Set([...(S.priv.covered || []), ...sp.covered])];
       S.priv.chat.push({ role: 'assistant', content: sp.text || '（応答が空でした）' });
+      S.priv.choices = sp.choices || [];
       await savePriv();
     });
   }
@@ -382,7 +479,12 @@
       } else if (deposited >= 2 && (deposited >= S.teamSize || hadMeeting)) {
         S.tab = 'meeting';
         render();
-        await Engine.runMeeting(ctx(), { mode: 'full' });
+        // サーバーで進められるときは合図だけ送る（この画面を閉じても会議は進む）。だめなら、これまでどおりこの画面で進める
+        const kicked = S.cfg.serverMeeting && api.kickMeeting && !window.PROTO ? await api.kickMeeting() : null;
+        if (kicked && kicked.ok !== false) {
+          S.kickAt = Date.now();
+          S.notice = '預けました。会議はサーバーで進みます。この画面を閉じても大丈夫です。';
+        } else await Engine.runMeeting(ctx(), { mode: 'full' });
       } else {
         S.tab = 'meeting';
       }
@@ -745,8 +847,40 @@
       up.length ? h('div', {}, h('span', { class: 'gap-l' }, 'この案が上だった項目'), h('ul', { class: 'plain' }, up.map(row))) : null,
       down.length ? h('div', {}, h('span', { class: 'gap-l' }, '次点が上だった項目'), h('ul', { class: 'plain' }, down.map(row))) : null,
       !up.length && !down.length ? h('div', { class: 'hint' }, 'どの項目も同じ点でした。') : null,
-      h('div', { class: 'hint', style: 'margin-top:6px' }, '基準の点はAIが付けるので、会議をやり直すと変わることがあります。1.5点未満の差は「僅差」として扱い、上位2案を全員にもう一度聞きます。')
+      h('div', { class: 'hint', style: 'margin-top:6px' }, rec.judgedTimes > 1 ? '基準の点は、進行役AIが同じ採点を2回行った平均です（ぶれを減らすため）。2回のどちらか片方だけで決めると1位が変わる場合と、1.5点未満の差は「僅差」として扱い、上位2案を全員にもう一度聞きます。' : '基準の点はAIが付けるので、会議をやり直すと変わることがあります。1.5点未満の差は「僅差」として扱い、上位2案を全員にもう一度聞きます。'),
+      scoreRule()
     );
+  }
+  // 点の決め方と、その重みにしている理由
+  function scoreRule() {
+    return h(
+      'details',
+      { class: 'rule' },
+      h('summary', {}, '点の決め方と、この重みにしている理由'),
+      h('ul', { class: 'plain' },
+        h('li', {}, h('b', {}, '評価基準への合い方 70点： '), '幹事が決めた基準に合うかを、進行役AIが案の中身だけを見て採点します（誰の案かは知らせません）。審査や目的に合う案を選ぶ会議なので、こちらを主にしています。'),
+        h('li', {}, h('b', {}, 'メンバーの支持 30点： '), '基準の点が高くても、作る本人たちが乗り気でない案は進みません。そのための歯止めとして3割を充てています。'),
+        h('li', {}, h('b', {}, '代理人の推測は重み半分： '), '本人が言っていないことを代理人が推し量った評価は、本人の言葉より軽く扱います。推測だけで案が落ちないよう、低い推測が付いたときは本人に確かめます。'),
+        h('li', {}, h('b', {}, '本人が「嫌」と言った案は対象外： '), '点数で押し切らないためです。')
+      ),
+      h('div', { class: 'hint' }, 'この配分は、このアプリが決めた目安です。基準ごとの重みは、幹事が「新しさ ×2」のように変えられます。')
+    );
+  }
+  // 理由の最初の1文だけを取り出す
+  function firstSentence(text) {
+    const t = Engine.cleanText(text, S.snap && S.snap.cand).replace(/\s+/g, ' ').trim();
+    const sents = (t.match(/[^。！？!?]+[。！？!?]*/g) || [t]).map((x) => x.trim()).filter(Boolean);
+    // 「〜を推薦します。」「合計◯点で〜」のような前置きは飛ばし、決め手を言っている文を出す
+    const key = sents.find((x) => /決め手|理由は|強みは|からです/.test(x));
+    const body = key || sents.find((x) => !/推薦(します|です|は)|^合計[\d.]+点/.test(x)) || sents[0] || '';
+    return body.length > 110 ? body.slice(0, 108) + '…' : body;
+  }
+  // 次点との差を1行で
+  function gapLine(rec) {
+    const g = Engine.compareTop(rec);
+    if (!g) return null;
+    const best = g.rows.filter((x) => x.pts > 0).sort((a, b) => b.pts - a.pts)[0];
+    return h('div', { class: 'gap1' }, `次点は「${g.title}」（${g.diff > 0 ? '+' : ''}${g.diff}点の差）`, best ? h('span', { class: 'gapsub' }, `いちばん差がついたのは「${best.label}」`) : null);
   }
   function scoreTiles(rec, top) {
     const t = (rec.table || []).find((x) => x.candId === rec.topId);
@@ -792,6 +926,10 @@
         h('div', { class: 'agenthead' }, avatar(S.cfg.memberId), h('div', {}, h('b', {}, `${S.cfg.name}さんの代理人`), h('div', { class: 'hint' }, 'この会話はこのPCにだけ保存されます。預けるのはまとめたメモだけで、本音の部分（好きな点・不安な点・条件）は、ほかのメンバーの画面に出ません。')))
       ),
       msgs,
+      // 代理人の質問に、押すだけで答えられる選択肢。自分の言葉で書きたいときは下の入力欄を使う
+      !chatBusy && (S.priv.choices || []).length && !S.priv.pendingBrief
+        ? h('div', { class: 'quick', id: 'quick' }, h('span', { class: 'hint' }, '押して答える：'), S.priv.choices.map((c) => h('button', { class: 'chip', disabled: !!S.busy, onclick: () => sendChat(c) }, c)))
+        : null,
       h(
         'div',
         { class: 'composer' },
@@ -820,7 +958,7 @@
               '声で入力'
             )
           : null,
-        h('button', { class: 'btn', disabled: !!S.busy, onclick: sendChat }, '送信')
+        h('button', { class: 'btn', disabled: !!S.busy, onclick: () => sendChat() }, '送信')
       )
     );
 
@@ -890,7 +1028,8 @@
   const STAGES = [['round1', '意見を出す'], ['merge', '合体案・新案'], ['feas', '作れるか調べる'], ['round2', '評価し直す'], ['explain', '推薦をまとめる']];
   // 文章を段落ごとに分けて表示する
   const paras = (text) => {
-    const ps = Engine.paragraphs(text);
+    // 前の版で保存された文章にも、案の内部の番号や引用の印が残っていることがあるので、表示のときにも取り除く
+    const ps = Engine.paragraphs(Engine.cleanText(text, S.snap && S.snap.cand));
     return ps.length ? ps.map((p) => h('p', { class: 'para' }, p)) : [text || ''];
   };
 
@@ -929,7 +1068,20 @@
     const el = $('liveElapsed');
     const st = S.snap && S.snap.state && S.snap.state.main;
     if (el && st && st.runStartedAt) el.textContent = fmtSpan(Date.now() - st.runStartedAt);
+    const left = $('liveLeft');
+    if (left && st && st.runStartedAt) left.textContent = leftText(st);
   }, 1000);
+  // 会議の残り時間の目安。前回の実績があればそれを、なければ人数から見積もる（3人で約4分の実測に合わせた式）
+  function estimateMs(st) {
+    if (st.lastRunMs) return st.lastRunMs;
+    const n = Math.max(2, (st.participants || []).length || Object.keys((S.snap && S.snap.brief) || {}).length);
+    return (60 + 65 * n) * 1000;
+  }
+  function leftText(st) {
+    const left = estimateMs(st) - (Date.now() - st.runStartedAt);
+    if (left <= 20000) return 'まもなく終わります';
+    return `あと約${Math.max(1, Math.round(left / 60000))}分`;
+  }
   function liveCard(st) {
     const idx = STAGES.findIndex((x) => x[0] === st.stage);
     const msgs = Engine.sortedMsgs(S.snap).filter((m) => m.round === st.round);
@@ -946,7 +1098,8 @@
         { class: 'livetime' },
         h('span', {}, idx >= 0 ? `いま ${idx + 1} / ${STAGES.length} 段階め` : '準備中'),
         st.runStartedAt ? h('span', {}, '開始から ', h('b', { id: 'liveElapsed' }, fmtSpan(Date.now() - st.runStartedAt))) : null,
-        h('span', {}, st.lastRunMs ? `前回の会議は${fmtSpan(st.lastRunMs)}で終わりました` : '人数が多いほど長くなります（数分が目安）')
+        st.runStartedAt ? h('b', { id: 'liveLeft', class: 'liveleft' }, leftText(st)) : null,
+        h('span', {}, st.lastRunMs ? `前回の会議は${fmtSpan(st.lastRunMs)}で終わりました` : `ふつう${Math.max(2, Math.round(estimateMs(st) / 60000) - 1)}〜${Math.round(estimateMs(st) / 60000) + 1}分で終わります`)
       ),
       h(
         'div',
@@ -954,7 +1107,7 @@
         msgs.map(msgRow),
         speaker ? bubbleRow(speakerIdOf(speaker), speaker, text || '考えています…', true) : h('div', { class: 'm system' }, (st.progress || '準備しています') + '…')
       ),
-      h('div', { class: 'hint', style: 'margin-top:8px' }, st.runner === S.cfg.memberId ? '発言が出るたびにここへ流れます。終わると下に推薦案が出ます。会議が終わるまでこの画面を開いたままにしてください。' : `${st.runnerName || 'ほかのメンバー'}さんのアプリが会議を進めています。発言が出るたびにここへ流れます。`)
+      h('div', { class: 'hint', style: 'margin-top:8px' }, st.runner === S.cfg.memberId ? '発言が出るたびにここへ流れます。終わると下に推薦案が出ます。会議が終わるまでこの画面を開いたままにしてください。' : st.runner === 'server' ? 'サーバーが会議を進めています。発言が1つ終わるたびにここへ出ます。この画面を閉じても会議は進みます。' : `${st.runnerName || 'ほかのメンバー'}さんのアプリが会議を進めています。発言が出るたびにここへ流れます。`)
     );
   }
   // 話している途中の文章だけを差し替える（画面全体は描き直さない）
@@ -1032,7 +1185,7 @@
     const who = (c) => (c.owner === 'facilitator' ? '進行役AI' : `${(S.snap.member[c.owner] || {}).name || '?'}さんの代理人`);
     const copy = async () => {
       try {
-        await navigator.clipboard.writeText(JSON.stringify({ app: 'かわりに会議', exportedAt: new Date().toISOString(), snapshot: S.snap }, null, 1));
+        await navigator.clipboard.writeText(JSON.stringify({ app: 'MeetForMe', exportedAt: new Date().toISOString(), snapshot: S.snap }, null, 1));
         S.notice = '会議の記録をコピーしました。メモ帳などに貼り付けて保存できます。';
       } catch (e) {
         S.error = 'コピーできませんでした。';
@@ -1089,7 +1242,7 @@
     const rec = st.recommendation || {};
     const t = (rec.table || []).find((x) => x.candId === st.decidedCandId);
     const names = (st.participants || []).map((id) => (snap.member[id] || {}).name || '?');
-    const lines = [`【決定】${roomInfo().theme || 'かわりに会議'}`, '', `決まった案：${c.title || ''}`];
+    const lines = [`【決定】${roomInfo().theme || 'MeetForMe'}`, '', `決まった案：${c.title || ''}`];
     if (c.summary) lines.push(c.summary);
     lines.push('', `誰向けか：${Engine.partText(c.target) || '-'}`, `何を解決するか：${Engine.partText(c.problem) || '-'}`, `目玉機能：${Engine.partText(c.feature) || '-'}`);
     if (t && t.total !== undefined) lines.push('', `点数：${pointsText(t)}`);
@@ -1179,7 +1332,7 @@
     el.className = 'show';
     el.onclick = (e) => { if (e.target === el) close(); };
     try {
-      if (canNotify() && (document.hidden || !document.hasFocus())) notifyUser('かわりに会議：決定しました', `「${c.title}」に決まりました。`);
+      if (canNotify() && (document.hidden || !document.hasFocus())) notifyUser('MeetForMe：決定しました', `「${c.title}」に決まりました。`);
     } catch (e) {}
   }
   function checkDecided() {
@@ -1238,7 +1391,7 @@
     const dl = roomInfo().deadlineAt || 0;
     const remind = async () => {
       const names = yet.map((m) => m.name + 'さん').join('、');
-      const text = `【かわりに会議】${theme ? '「' + theme + '」の会議で、' : ''}${names ? names + 'の' : 'まだの人の'}入力を待っています。アプリを開いて、「① 考えを預ける」で考えを預けてください（5分ほどです）。全員が預けると、AIの代理人どうしの会議が自動で始まります。${dl ? `締切は${fmtDeadline(dl)}です。締切になると、預けた人だけで会議を始めます。` : ''}`;
+      const text = `【MeetForMe】${theme ? '「' + theme + '」の会議で、' : ''}${names ? names + 'の' : 'まだの人の'}入力を待っています。アプリを開いて、「① 考えを預ける」で考えを預けてください（5分ほどです）。全員が預けると、AIの代理人どうしの会議が自動で始まります。${dl ? `締切は${fmtDeadline(dl)}です。締切になると、預けた人だけで会議を始めます。` : ''}`;
       try {
         await navigator.clipboard.writeText(text);
         S.notice = 'お願いの文をコピーしました。チャットに貼り付けて送ってください。';
@@ -1286,6 +1439,7 @@
       { class: 'plain datanote', id: 'datanote' },
       h('li', {}, h('b', {}, 'AIに送られるもの：'), '代理人に話した内容と、会議のやり取りは、AIに考えさせるために Anthropic（Claude）へ送られます。'),
       h('li', {}, h('b', {}, '共有されるもの：'), '会議に必要な内容（案、預けた考え、代理人の発言、採点、決定）は、共有の保存先（Supabase）に置かれます。招待コードを知っている人は読めるので、招待コードはメンバー以外に渡さないでください。'),
+      h('li', {}, h('b', {}, '決まったら消えるもの：'), '全員が承認して決定すると、預けた本音（好きな点・不安な点・外したくない条件・実装でできること）と、代理人からの確認のやり取りは、共有の保存先から自動で消えます。残るのは、会議で公開された案・発言・採点・決定だけです。'),
       h('li', {}, h('b', {}, 'このPCだけに残るもの：'), '代理人との会話そのものと、名前などの設定は、このPCにだけ保存されます。'),
       h('li', {}, h('b', {}, '消し方：'), '幹事は「設定・招待」から、会議のデータをすべて削除できます。このPCに残った内容は「このPCのデータを消す」で消せます。'),
       h('li', {}, h('b', {}, '入れないでほしいもの：'), 'パスワード、クレジットカード番号、他人の個人情報などは入力しないでください。')
@@ -1391,10 +1545,10 @@
               h('div', { class: 'big' }, top.title, top.origin === 'merged' ? h('span', { class: 'tag mix' }, '合体案') : null, top.origin === 'ai' ? h('span', { class: 'tag new' }, 'AIの新案') : null),
               h('div', { class: 'recsum' }, top.summary),
               scoreTiles(rec, top),
-              h('h3', {}, 'なぜこの案か'),
-              h('div', { class: 'reason' }, paras(rec.reason)),
-              gapView(rec),
-              rec.tie && snap.cand[rec.runnerUpId] ? h('div', { class: 'q', style: 'margin-top:10px' }, h('p', {}, `「${snap.cand[rec.runnerUpId].title}」と評価が並んでいます。${rec.conflict ? '対立点：' + rec.conflict : ''}`)) : null
+              // 結論だけを先に見せる。理由は最初の1文、次点との差は1行。くわしい内訳は下の「くわしく見る」に入れる
+              h('div', { class: 'reason1' }, h('b', {}, '理由： '), firstSentence(rec.reason)),
+              gapLine(rec),
+              rec.tie && snap.cand[rec.runnerUpId] ? h('div', { class: 'q', style: 'margin-top:10px' }, h('p', {}, rec.unstable ? `2回の採点で、「${snap.cand[rec.runnerUpId].title}」と1位が入れ替わりました。僅差として扱います。` : `「${snap.cand[rec.runnerUpId].title}」と評価が並んでいます。${rec.conflict ? '対立点：' + rec.conflict : ''}`)) : null
             ),
             h(
               'div',
@@ -1425,7 +1579,10 @@
             const d = h(
               'details',
               { class: 'more', open: !!S.open.recmore },
-              h('summary', {}, 'くわしく見る（案の中身・誰の意見が効いたか・実装の進め方）'),
+              h('summary', {}, 'くわしく見る（理由の全文・次点との差の内訳・案の中身・実装の進め方）'),
+              h('h3', {}, 'なぜこの案か'),
+              h('div', { class: 'reason' }, paras(rec.reason)),
+              gapView(rec),
               partsView(top),
               feasView(top, true),
               rec.influences && rec.influences.length ? h('div', {}, h('h3', {}, '誰のどの意見が効いたか'), h('ul', { class: 'plain' }, rec.influences.map((i) => h('li', {}, h('b', {}, i.name + '： '), i.point)))) : null,
@@ -1458,7 +1615,7 @@
           c.why ? h('div', { class: 'hint', style: 'margin-top:6px' }, (c.origin === 'ai' ? 'この案を足した理由：' : '組み合わせの狙い：') + c.why) : null,
           feasView(c, false),
           t && t.marks && t.marks.length
-            ? h('div', { class: 'fit' }, h('b', {}, '評価基準ごとの採点（進行役AI）'), h('div', { class: 'marks' + (t.marks.some((m) => m.note) ? ' rows' : '') }, t.marks.map((m) => h('div', { class: 'mkrow' }, h('span', { class: 'mk s' + m.score }, `${m.name}${m.weight !== 1 ? ' ×' + m.weight : ''}：${m.score}/5`), m.note ? h('span', { class: 'mknote' }, m.note) : null))), t.comment ? h('div', { class: 'hint' }, t.comment) : null)
+            ? h('div', { class: 'fit' }, h('b', {}, '評価基準ごとの採点（進行役AI）'), h('div', { class: 'marks' + (t.marks.some((m) => m.note) ? ' rows' : '') }, t.marks.map((m) => h('div', { class: 'mkrow' }, h('span', { class: 'mk s' + Math.round(m.score) }, `${m.name}${m.weight !== 1 ? ' ×' + m.weight : ''}：${m.score}/5`), m.spread ? h('span', { class: 'mkspread', title: '2回採点した結果に差がありました。平均を使っています' }, `2回の差 ${m.spread}`) : null, m.note ? h('span', { class: 'mknote' }, m.note) : null))), t.comment ? h('div', { class: 'hint' }, t.comment) : null)
             : null,
           evs.length && evs.every((x) => x.ev.basis !== 'stated')
             ? h('div', { class: 'hint guessnote' }, 'この案への支持は、すべて代理人の推測です（本人の意見はまだ入っていません）。承認の前に、自分の考えと合っているか確かめてください。')
@@ -1480,6 +1637,7 @@
         return -(t.total === undefined ? t.score || 0 : t.total);
       };
       const sorted = cands.slice().sort((a, b) => rank(a) - rank(b));
+      const anyFeas = cands.some((c) => c.feas);
       let no = 0;
       const row = (c) => {
         const t = table[c.id];
@@ -1497,7 +1655,7 @@
             h('span', { class: 'cno' }, out ? '—' : total === null ? '・' : String(++no)),
             h('span', { class: 'cmain' }, h('span', { class: 'cttl' }, c.title, isTop ? h('span', { class: 'tag push' }, '推薦') : null, c.origin === 'merged' ? h('span', { class: 'tag mix' }, '合体案') : null, c.origin === 'ai' ? h('span', { class: 'tag new' }, 'AIの新案') : null, out ? h('span', { class: 'tag out' }, c.dropped ? '本人が取り下げ' : '対象外') : null), h('span', { class: 'cwho' }, who(c))),
             total === null ? h('span', { class: 'cscore none' }, c.dropped ? '採点しません' : '採点前') : h('span', { class: 'cscore' }, h('span', { class: 'cbar' }, h('i', { style: `width:${Math.max(0, Math.min(100, total))}%` })), h('b', {}, String(total)), h('small', {}, '点')),
-            h('span', { class: 'cfeas' + (c.feas ? ' f-' + c.feas.verdict : '') }, c.feas ? Engine.FEAS_LABEL[c.feas.verdict] || '—' : '—'),
+            anyFeas ? h('span', { class: 'cfeas' + (c.feas ? ' f-' + c.feas.verdict : '') }, c.feas ? Engine.FEAS_LABEL[c.feas.verdict] || '—' : out ? '—' : '未調査') : null,
             h('span', { class: 'cchev' }, '')
           ),
           card(c)
@@ -1512,9 +1670,9 @@
         fold(
           'cands',
           `すべての案をくらべる（${cands.length}案）`,
-          true,
+          !(rec && st.phase !== 'collecting'),
           h('div', { class: 'csum' }, h('span', {}, `メンバーの案 ${nMember}`), nMerged ? h('span', {}, `＋ 合体案 ${nMerged}`) : null, nAi ? h('span', {}, `＋ AIの新案 ${nAi}`) : null, h('span', { class: 'hint' }, '出された案は1つずつ候補になります。進行役AIが、相性のよい案を組み合わせた合体案と、新しい案を足して、まとめて採点します。')),
-          h('div', { class: 'chead' }, h('span', { class: 'cno' }, '順位'), h('span', { class: 'cmain' }, '案（提案した人）'), h('span', { class: 'cscore' }, '点数（100点満点）'), h('span', { class: 'cfeas plain' }, '実現性'), h('span', { class: 'cchev plain' }, '')),
+          h('div', { class: 'chead' }, h('span', { class: 'cno' }, '順位'), h('span', { class: 'cmain' }, '案（提案した人）'), h('span', { class: 'cscore' }, '点数（100点満点）'), anyFeas ? h('span', { class: 'cfeas plain' }, '実現性') : null, h('span', { class: 'cchev plain' }, '')),
           sorted.map(row),
           h('div', { class: 'hint', style: 'margin-top:10px' }, '行を押すと、案の中身・採点の内訳・各代理人の意見が開きます。100点満点で、お題と評価基準への合い方が70点（進行役AIが基準ごとに5段階で採点）、メンバーの支持が30点（各代理人が5段階。推測による評価は重み半分）です。本人が「嫌」と言った案と、元の案より点が低い合体案は対象外です。評価基準が未設定のときは、支持だけで100点に換算します。')
         )
@@ -1539,8 +1697,9 @@
         msgs.length
           ? h('div', { class: 'log' }, msgs.map(msgRow))
           : h('div', { class: 'hint' }, 'まだ会議は始まっていません。全員が「① 考えを預ける」で考えを預けると、代理人どうしの会議が始まります。'),
-        st.phase === 'review' || st.phase === 'decided'
+        st.phase === 'review'
           ? h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', disabled: !!S.busy || running, onclick: () => startMeeting('full') }, '最初から会議をやり直す'))
+          : st.phase === 'decided' ? h('div', { class: 'hint' }, '決定したので、預けた本音は共有の保存先から消しました。やり直すときは、幹事が「決定を取り消す」を押してください（各自のアプリから自動で預け直されます）。')
           : null
       )
     );
@@ -1741,8 +1900,9 @@
         { class: 'hero2' },
         h('div', { class: 'eyebrow' }, '集まる時間が合わないチームへ'),
         h('h2', { class: 'herotitle' }, 'AIの代理人が、あなたのかわりに', h('br', {}), '「どの案にするか」を話し合います'),
-        h('p', { class: 'herolead' }, 'あなたは代理人に考えを話すだけ。会議は代理人どうしで進みます。'),
-        h('p', { class: 'heroterm' }, h('b', {}, '代理人'), '＝あなたの考えを預かり、かわりに会議で話すAI。', h('b', {}, '預ける'), '＝代理人に、自分の案と本音を伝えること。最後に決めるのは人間です（全員の承認で決定）。'),
+        h('p', { class: 'herolead' }, 'あなたは代理人に考えを話すだけ。会議は、あなたが留守の間に、代理人どうしで進みます。'),
+        h('p', { class: 'herofor' }, '集まれるなら、集まって話すのが一番です。これは、集まりたいのに時間が合わないチームのための道具です。全員の考えが、声の大きさに関係なく同じ重さで会議に入ります。'),
+        h('p', { class: 'heroterm' }, h('b', {}, '代理人'), '＝あなたの考えを預かり、MeetForMeで話すAI。', h('b', {}, '預ける'), '＝代理人に、自分の案と本音を伝えること。最後に決めるのは人間です（全員の承認で決定）。'),
         h(
           'div',
           { class: 'stepcards' },
@@ -1780,7 +1940,7 @@
     const copyInvite = async () => {
       const text = window.WEB
         ? [
-            `【かわりに会議】${r.theme ? '「' + r.theme + '」を決める' : ''}会議に参加してください。`,
+            `【MeetForMe】${r.theme ? '「' + r.theme + '」を決める' : ''}会議に参加してください。`,
             '1. 次のリンクを開きます（スマホ・Mac・Windowsのブラウザで使えます。インストールは不要です）。',
             `   ${joinLink()}`,
             '2. 名前を入れて「参加する」を押します（招待コードは入った状態で開きます）。',
@@ -1789,10 +1949,10 @@
             '※ このリンクと招待コードはチームの外に渡さないでください。',
           ].join('\n')
         : [
-        `【かわりに会議】${r.theme ? '「' + r.theme + '」を決める' : ''}会議に参加してください。`,
-        '1. 一緒に送るインストーラー（kawarini-kaigi-setup-….exe）を開きます。Windowsのパソコンで使えます。',
+        `【MeetForMe】${r.theme ? '「' + r.theme + '」を決める' : ''}会議に参加してください。`,
+        '1. 一緒に送るインストーラー（rusuban-kaigi-setup-….exe）を開きます。Windowsのパソコンで使えます。',
         '   ※ 初回は青い画面「WindowsによってPCが保護されました」が出ます。まだ署名をしていないためで、「詳細情報」→「実行」で進めます。',
-        '2. 「かわりに会議」を開き、「招待コードで参加する」に名前と下のコードを入れます。',
+        '2. 「MeetForMe」を開き、「招待コードで参加する」に名前と下のコードを入れます。',
         `   招待コード： ${inviteCode()}`,
         '3. 「① 考えを預ける」で、自分の代理人に案と本音を話します（5分ほど）。全員が預けると、代理人どうしの会議が自動で始まります。',
         '※ 招待コードはチームの外に渡さないでください。',
@@ -1897,7 +2057,7 @@
       });
     const report = async () => {
       const lines = [
-        '【かわりに会議 不具合の報告】',
+        '【MeetForMe 不具合の報告】',
         `版: ${S.cfg.appVersion} ／ 環境: ${S.cfg.platform || ''}`,
         `共有: ${S.cfg.sharedMode} ／ AI: ${S.cfg.hasApiKey ? '自分のAPIキー' : S.cfg.demo ? '見本モード' : S.cfg.serverAi ? 'サーバー経由' : 'なし'} ／ 役割: ${isLeader() ? '幹事' : 'メンバー'}`,
         `会議の状態: ${state().phase || ''}（第${state().round || 0}回）${state().error ? ' ／ 止まった理由: ' + state().error : ''}`,
@@ -2012,6 +2172,20 @@
         ),
         h('div', { class: 'row end', style: 'margin-top:16px' }, h('button', { class: 'btn', onclick: save }, '保存する'))
       ),
+      h(
+        'div',
+        { class: 'card', id: 'sec-take' },
+        h('h2', {}, '別の端末で続ける'),
+        h('div', { class: 'hint' }, 'PCで始めた代理人との会話を、スマホで続けられます（逆もできます）。リンクを作り、続きをしたい端末のブラウザで開いてください。会話は暗号化して保存され、鍵はリンクの中にだけあります。リンクはあなた専用なので、ほかの人に渡さないでください。'),
+        S.takeLink ? h('div', { class: 'codebox', id: 'takeLink', style: 'margin-top:10px;word-break:break-all' }, S.takeLink) : null,
+        h(
+          'div',
+          { class: 'row end', style: 'margin-top:10px' },
+          S.takeLink ? h('button', { class: 'btn ghost', onclick: async () => { try { await navigator.clipboard.writeText(S.takeLink); S.notice = '引き継ぎリンクをコピーしました。'; } catch (e) { S.notice = 'コピーできませんでした。リンクを長押しして選び、コピーしてください。'; } renderStatus(); } }, 'リンクをコピー') : null,
+          h('button', { class: 'btn' + (S.takeLink ? ' ghost' : ''), disabled: !!S.busy, onclick: async () => { try { S.takeLink = await makeTakeLink(); S.error = ''; } catch (e) { S.error = errText(e); } render(); } }, S.takeLink ? '作り直す' : '引き継ぎリンクを作る')
+        ),
+        S.priv && S.priv.syncKey ? h('div', { class: 'hint', style: 'margin-top:8px' }, 'この会議は、引き継ぎが有効です。会話を進めるたびに、暗号化した内容が保存先に送られます。') : null
+      ),
       leaderCard,
       toolsCard,
       aboutCard,
@@ -2087,17 +2261,37 @@
   }
 
   // 幹事のアプリ（AIを呼べる）が開いていれば、全員が預けたとき・新しい答えが届いたときに会議を進める
+  // 会議をサーバーで進められるとき（関数「meeting」が入っているとき）は、だれの画面からでも「進めてください」と合図だけ送る。
+  // 画面を閉じても会議は進む。合図から90秒たっても始まらないときだけ、これまでどおり幹事の画面で進める
+  function serverKick() {
+    if (!S.cfg.serverMeeting || !api.kickMeeting || window.PROTO) return false;
+    if (!ready() || S.busy || isRunning()) return true;
+    const st = state();
+    const auto = Engine.autoMode(S.snap, Date.now());
+    if (!auto) return true;
+    const key = [auto.mode, st.round || 0, st.paused || 0, st.lastRunAt || 0, Object.keys(S.snap.brief).sort().join(',')].join(':');
+    if (S.kickKey !== key) {
+      S.kickKey = key;
+      S.kickAt = Date.now();
+      api.kickMeeting().then((r) => { if (!r || r.ok === false) S.kickAt = 0; }).catch(() => { S.kickAt = 0; });
+      return true;
+    }
+    return Date.now() - (S.kickAt || 0) < 90000;
+  }
   function autoRun() {
+    const kickPending = serverKick();
     if (!ready() || S.busy || !canAI() || !isLeader() || isRunning()) return;
     const snap = S.snap;
     const st = state();
     if (st.error) return; // 止まったままのときは自動では繰り返さない（会議室の「続きから再開する」で進める）
     const ids = Object.keys(snap.brief).filter((id) => snap.member[id]).sort();
     let mode = '';
+    if (kickPending) return; // サーバーに任せて待っているところ
     const deadlineAt = roomInfo().deadlineAt || 0;
     const due = !!deadlineAt && Date.now() >= deadlineAt; // 預ける締切を過ぎたら、預けた人だけで始める
     let late = false;
     if (st.phase === 'collecting' && ids.length >= 2 && (ids.length >= S.teamSize || due)) mode = 'full';
+    if (mode === 'full' && st.paused && Engine.canResume(snap)) mode = 'resume'; // サーバーが時間で区切った続き
     else if (st.phase === 'review') {
       const last = st.lastRunAt || 0;
       const pending = ids.some((id) => (snap.brief[id].updates || []).some((u) => u.at > last) && !Object.values(snap.question).some((q) => q.memberId === id && q.status === 'open'));
@@ -2174,6 +2368,16 @@
     S.cfg = await api.getConfig();
     if (ready()) await enterRoom();
     // Web版: 招待のリンク（…#join=コード）から開いたら、参加の画面を、コードが入った状態で出す
+    // 引き継ぎのリンク（…#take=…）から開いたら、同じ人としてこの端末で続きができるようにする
+    const tm = /[#&]take=([^&]+)/.exec(location.hash || '');
+    if (tm) {
+      try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+      try {
+        await takeOver(decodeURIComponent(tm[1]));
+      } catch (e) {
+        S.error = '引き継ぎに失敗しました。（' + errText(e) + '）';
+      }
+    }
     const jm = window.WEB ? /[#&]join=([^&]+)/.exec(location.hash || '') : null;
     if (jm) {
       S.joinCode = decodeURIComponent(jm[1]);

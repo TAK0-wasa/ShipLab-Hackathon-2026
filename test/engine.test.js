@@ -1,54 +1,7 @@
 // 会議エンジンの通しテスト（AIと共有ストアはモック）。実行: npm test
 const assert = require('assert');
 const Engine = require('../src/engine.js');
-
-function memStore() {
-  const m = new Map();
-  return {
-    all: async () => [...m.entries()].map(([k, data]) => ({ kind: k.split('/')[0], id: k.slice(k.indexOf('/') + 1), data: JSON.parse(JSON.stringify(data)) })),
-    put: async (kind, id, data) => void m.set(`${kind}/${id}`, JSON.parse(JSON.stringify(data))),
-    del: async (kind, id) => void m.delete(`${kind}/${id}`),
-  };
-}
-
-const calls = [];
-function mockLlm(opts) {
-  return async (req) => {
-    const { system, messages } = req;
-    const user = messages[0].content;
-    const task = (user.match(/【タスク:(\w+)】/) || [])[1];
-    calls.push({ system, user, task, search: req.search });
-    const section = user.split('【会議に出ている案】')[1] || user.split('【案の内容】')[1] || '';
-    const ids = [...section.split('【')[0].matchAll(/^\[([\w-]+)\]/gm)].map((x) => x[1]);
-    const who = (system.match(/あなたは(.+?)さんの代理人/) || [])[1];
-    if (task === 'round1') {
-      return '```json\n' + JSON.stringify({
-        statement: `${who}の代理人として意見を述べます。`,
-        evals: ids.map((id, i) => ({ candId: id, score: i === 0 ? 5 : 3, reason: '理由', basis: 'stated' })),
-        wantParts: [{ candId: ids[0], part: 'feature', why: '面白い' }],
-        canDo: `${who}はフロントエンドを担当できる`,
-      }) + '\n```';
-    }
-    if (task === 'merge') {
-      return JSON.stringify({ statement: '合体案を作りました。', merged: [{ title: '合体案X', summary: 's', target: 't', problem: 'p', feature: 'f', from: ids.slice(0, 2), why: 'w' }], fresh: [{ title: '新案Y', summary: 's', target: 't', problem: 'p', feature: 'f', why: 'w' }], drop: [] });
-    }
-    if (task === 'round2' || task === 'rerun') {
-      return JSON.stringify({
-        statement: `${who}の代理人です。見直しました。`,
-        evals: ids.map((id) => {
-          if (opts.vetoBy === who && id === ids[0]) return { candId: id, score: 1, reason: '本人が嫌と言った', basis: 'stated' };
-          if (opts.lowGuessBy === who && id.startsWith('mix')) return { candId: id, score: 2, reason: '重そう', basis: 'guess' };
-          return { candId: id, score: id.startsWith('mix') ? 5 : 3, reason: '理由', basis: 'guess' };
-        }),
-        questions: task === 'round2' ? [{ candId: ids[0], text: `${who}さんへの確認です` }] : [],
-      });
-    }
-    if (task === 'feas') return JSON.stringify({ statement: '実現性を検討しました。', items: ids.map((id, i) => ({ candId: id, verdict: i === 0 ? 'ok' : 'partial', needs: 'n', mvp: `${id}の最小の形`, later: 'l', risk: 'r' })) }) + (opts.withSources ? '§SRC§https://example.com/a https://example.com/b' : '');
-    if (task === 'judge') return JSON.stringify({ scores: ids.map((id) => ({ candId: id, marks: id.startsWith('mix') ? [5, 4] : [3, 2], comment: 'c' })) });
-    if (task === 'explain') return JSON.stringify({ reason: '全員の評価が高いためです。', influences: [{ name: 'A', point: '実装の軽さ' }], conflict: '', plan: { steps: '進め方', roles: [{ name: 'A', role: '画面' }] } });
-    throw new Error('unknown task ' + task);
-  };
-}
+const { memStore, mockLlm, calls } = require('./mocks.js');
 
 (async () => {
   // ---- 採点ルールの単体確認 ----
@@ -82,6 +35,12 @@ function mockLlm(opts) {
     assert.deepStrictEqual([tb.crit, tb.support, tb.total], [14, 30, 44]);
     assert.strictEqual(r.topId, 'a');
     assert.deepStrictEqual(r.ratio, { crit: 70, support: 30 });
+    // AIの文章の後始末: 案の内部の番号は名前に、引用の印は外す（本物のAIでの通し確認で見つかった）
+    const cm = { 'mix1-2': { title: '割り勘' }, 'mix1-22': { title: '別案' }, 'new1-1': { title: '催促' } };
+    assert.strictEqual(Engine.cleanText('「mix1-2」が81点。次点のnew1-1(79点)より、mix1-2の支持が上。合体案(mix1-22)は別。', cm), '「割り勘」が81点。次点の「催促」(79点)より、「割り勘」の支持が上。合体案(「別案」)は別。');
+    assert.strictEqual(Engine.cleanText('<cite index="15-11">無料枠があります。</cite>ただし注意。', cm), '無料枠があります。ただし注意。');
+    assert.strictEqual(Engine.cleanText('番号のない文はそのまま', cm), '番号のない文はそのまま');
+    assert.strictEqual(Engine.cleanText(null, cm), '');
     // 次点との差の内訳: 基準 x・y で +28 ずつ、支持で -12。合計は +44 で、内訳の和と合う
     const gap = Engine.compareTop(r);
     assert.strictEqual(gap.diff, 44);
@@ -178,6 +137,7 @@ function mockLlm(opts) {
   await assert.rejects(() => Engine.runMeeting(ctxOf(people[0]), { mode: 'rerun' }), /進行中/);
   await store.put('state', 'main', snap.state.main);
 
+  const savedBriefs = Object.fromEntries(people.map((p) => [p.id, snap.brief[p.id]]));
   // 全員承認で決定
   assert.strictEqual(await Engine.approve(ctxOf(people[0])), false);
   assert.strictEqual(await Engine.approve(ctxOf(people[1])), false);
@@ -185,14 +145,23 @@ function mockLlm(opts) {
   snap = await Engine.snapshot(store);
   assert.strictEqual(snap.state.main.phase, 'decided');
   assert.strictEqual(snap.state.main.decidedCandId, 'mix1-1');
+  // 決定すると、共有の保存先から本音が消える。そのままではやり直せず、各自が預け直すとやり直せる
+  for (const p of people) {
+    assert.strictEqual(snap.brief[p.id].scrubbed, true, '決定後は本音が消えている');
+    assert.strictEqual(snap.brief[p.id].likes, undefined);
+    assert.ok(snap.brief[p.id].ideas.length, '案は残る');
+  }
+  assert.strictEqual(Object.keys(snap.question).length, 0, '確認のやり取りも消える');
+  await assert.rejects(() => Engine.runMeeting(ctxOf(people[1]), { mode: 'full' }), /本音を消しました/);
+  for (const p of people) await store.put('brief', p.id, savedBriefs[p.id]);
 
   // ---- 評価基準あり・本人の「嫌」・推測の低評価 ----
   await store.put('room', 'main', { theme: 'かゆいところに手が届くアプリ', criteria: 'テーマに合っているか\n新しさ ×2' });
   calls.length = 0;
   const rec2 = await Engine.runMeeting(ctxOf(people[1], { vetoBy: 'B', lowGuessBy: 'C', withSources: true }), { mode: 'full' });
   snap = await Engine.snapshot(store);
-  assert.strictEqual(calls.filter((c) => c.task === 'judge').length, 1, '基準があれば採点の呼び出しが1回入る');
-  assert.strictEqual(calls.length, 3 + 1 + 1 + 3 + 1 + 1);
+  assert.strictEqual(calls.filter((c) => c.task === 'judge').length, 2, '基準があれば採点の呼び出しが2回入る（ぶれを減らすため2回採点する）');
+  assert.strictEqual(calls.length, 3 + 1 + 1 + 3 + 2 + 1);
   const anyCand = Object.values(snap.cand).find((c) => c.feas);
   assert.strictEqual(anyCand.feas.searched, true, '検索した出典があれば、確認済みの印が付く');
   assert.deepStrictEqual(anyCand.feas.sources, ['https://example.com/a', 'https://example.com/b']);
@@ -281,8 +250,41 @@ function mockLlm(opts) {
 
   // ---- 小物 ----
   assert.deepStrictEqual(Engine.parseJson('はい。\n```json\n{"a":1}\n```\n以上'), { a: 1 });
-  assert.deepStrictEqual(Engine.splitCovered('好きな点は？\n<<済:1,2>>'), { text: '好きな点は？', covered: [1, 2] });
+  assert.deepStrictEqual(Engine.splitCovered('好きな点は？\n<<済:1,2>>'), { text: '好きな点は？', covered: [1, 2], choices: [] });
+  assert.deepStrictEqual(Engine.splitCovered('条件は？\n<<選:確実に動くこと｜AIを使うこと|特になし>>\n<<済:1>>'), { text: '条件は？', covered: [1], choices: ['確実に動くこと', 'AIを使うこと', '特になし'] });
   assert.strictEqual(Engine.splitCovered('目印なし').covered, null);
+  // 決定したら本音を消す: 案だけが残り、確認のやり取りは消える
+  {
+    const docs = { 'brief/a': { ideas: [{ title: 'X' }], likes: '好き', worries: '不安', mustHaves: ['条件'], impl: '10時間', updates: [{ text: '追加' }] }, 'question/q1': { text: '合っていますか' } };
+    const st = { put: async (k, id, d) => { docs[k + '/' + id] = d; }, del: async (k, id) => { delete docs[k + '/' + id]; } };
+    const n = await Engine.scrubPrivate(st, { brief: { a: docs['brief/a'] }, question: { q1: docs['question/q1'] } });
+    assert.strictEqual(n, 1);
+    assert.deepStrictEqual(Object.keys(docs), ['brief/a']);
+    assert.deepStrictEqual(docs['brief/a'].ideas, [{ title: 'X' }]);
+    assert.strictEqual(docs['brief/a'].scrubbed, true);
+    for (const k of Engine.PRIVATE_KEYS) assert.strictEqual(docs['brief/a'][k], undefined, k + ' が残っている');
+  }
+  // 採点を2回して平均する: 半点と、2回の差が残る
+  {
+    const a = { c1: { marks: [4, 2], notes: ['x', 'y'], comment: 'k' } };
+    const b = { c1: { marks: [3, 2], notes: ['p', 'q'], comment: 'z' } };
+    const m = Engine.mergeJudges(a, b, 2);
+    assert.deepStrictEqual(m.c1.marks, [3.5, 2]);
+    assert.deepStrictEqual(m.c1.spread, [1, 0]);
+    assert.strictEqual(Engine.mergeJudges(a, null, 2), a);
+    const rec = Engine.recommend([{ id: 'c1', title: 'A', origin: 'original' }], {}, [], m, [{ name: '新しさ', weight: 1 }, { name: '実現性', weight: 1 }]);
+    assert.strictEqual(rec.table[0].marks[0].score, 3.5);
+    assert.strictEqual(rec.table[0].marks[0].spread, 1);
+  }
+  // 実現性: 番号が括弧付き・題名・別のキー名で返ってきても、案に結び付く
+  {
+    const snap = { cand: { 'ab-1': { title: '割り勘アプリ' }, 'mix1-2': { title: '合体案' }, 'zz-9': { title: '取り下げ', dropped: true } } };
+    const got = Engine.feasItems({ items: [{ candId: '[ab-1]', verdict: 'ok' }, { id: 'MIX1-2', verdict: 'hard' }, { candId: 'zz-9' }, { candId: 'nope' }] }, snap);
+    assert.deepStrictEqual(got.map((x) => x.candId), ['ab-1', 'mix1-2']);
+    assert.deepStrictEqual(Engine.feasItems({ items: [{ candId: '割り勘アプリ' }, { title: '「合体案」' }] }, snap).map((x) => x.candId), ['ab-1', 'mix1-2']);
+    assert.deepStrictEqual(Engine.feasItems({ items: { 'ab-1': { verdict: 'ok' } } }, snap).map((x) => x.candId), ['ab-1']);
+    assert.deepStrictEqual(Engine.feasItems({}, snap), []);
+  }
   assert.strictEqual(Engine.paragraphs('一。\n\n二。').length, 2);
 
   console.log('OK: すべてのテストに通りました');

@@ -1,4 +1,4 @@
-// かわりに会議 Web版 v0.32.0（node web/build.js で作成。直接は書き換えない）
+// MeetForMe Web版 v0.36.1（node web/build.js で作成。直接は書き換えない）
 (function () { var module = { exports: {} };
 // 見本モード用の「AIの代わり」。APIを呼ばずに、決まった形の見本の応答を返す。
 // 画面の流れ（個室 → 預ける → 会議 → 採点 → 推薦 → 承認）を、費用をかけずに確かめるためのもの。
@@ -18,9 +18,9 @@ function parseCands(user) {
 
 function interview(messages) {
   const n = messages.filter((m) => m.role === 'user').length;
-  if (n <= 1) return '【見本】ありがとうございます。お題にも合いそうな案ですね。この案の一番好きなところと、逆に不安なところを教えてください。\n<<済:1>>';
-  if (n === 2) return '【見本】なるほど。では、外したくない条件はありますか。たとえば「締切までに確実に動くこと」「自分が実装できる技術で作れること」のように、これが崩れるなら別の案がいい、というものです。特になければ「なし」で大丈夫です。\n<<済:1,2>>';
-  if (n === 3) return '【見本】わかりました。最後に、この案を作るなら自分はどこを担当できそうか、締切までにどのくらい時間を使えそうかを教えてください。\n<<済:1,2,3>>';
+  if (n <= 1) return '【見本】ありがとうございます。お題にも合いそうな案ですね。この案の一番好きなところと、逆に不安なところを教えてください。\n<<選:すぐ伝わるのが好き。新しさが不安|自分が使いたい。実装が間に合うか不安|まだ分からない>>\n<<済:1>>';
+  if (n === 2) return '【見本】なるほど。では、外したくない条件はありますか。たとえば「締切までに確実に動くこと」「自分が実装できる技術で作れること」のように、これが崩れるなら別の案がいい、というものです。特になければ「なし」で大丈夫です。\n<<選:締切までに確実に動くこと|自分が実装できる技術で作れること|なし>>\n<<済:1,2>>';
+  if (n === 3) return '【見本】わかりました。最後に、この案を作るなら自分はどこを担当できそうか、締切までにどのくらい時間を使えそうかを教えてください。\n<<選:画面を担当。平日の夜に2時間ずつ|裏側を担当。週末にまとめて|発表と資料を担当。少しだけ>>\n<<済:1,2,3>>';
   return '【見本】ありがとうございます。必要なことは聞けました。「預ける内容を確認する」ボタンを押してください。\n<<済:1,2,3,4>>';
 }
 
@@ -146,14 +146,14 @@ module.exports = async function sampleAi({ system, messages }) {
 
 window.sampleAi = module.exports; })();
 ;
-// かわりに会議 — Web版の土台
+// MeetForMe — Web版の土台
 // デスクトップ版の main.js / preload.js が受け持っている仕事（設定と個室データの保存、共有ストアとAIサーバーへの通信）を、
 // ブラウザの中だけで行う。画面（src/app.js）と会議の処理（src/engine.js）は、デスクトップ版と同じものをそのまま使う。
 // ・設定と代理人との会話は、このブラウザ（localStorage）にだけ保存する
 // ・AIは会議のサーバー（Supabase の Edge Function「claude」）経由だけで使う。ClaudeのAPIキーはブラウザに置かない
 /* global sampleAi */
 (function () {
-  const VERSION = '0.32.0';
+  const VERSION = '0.36.1';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const REPO_URL = 'https://github.com/TAK0-wasa/ShipLab-Hackathon-2026';
   // デスクトップ版と同じ接続先（公開してよい種類のキー）。会議の中身は、会議の番号を知っている人しか読み書きできない（supabase_setup.sql）
@@ -240,6 +240,38 @@ window.sampleAi = module.exports; })();
     srvCache[u] = { ok, at: Date.now() };
     return ok;
   }
+  // ---------- 会議をサーバーで進める（関数「meeting」。入っていなければ、これまでどおり画面側で進める） ----------
+  const meetCache = {};
+  const meetUrl = (cfg) => serverUrl(cfg).replace(/claude$/, 'meeting');
+  const meetKnown = (cfg) => {
+    const u = meetUrl(cfg);
+    return !!(u && meetCache[u] && meetCache[u].ok);
+  };
+  async function probeMeeting(cfg) {
+    const u = meetUrl(cfg);
+    if (!u || cfg.demo) return false;
+    const hit = meetCache[u];
+    if (hit && Date.now() - hit.at < (hit.ok ? 300000 : 600000)) return hit.ok;
+    let ok = false;
+    try {
+      const res = await limit(fetch(u, { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify({ ping: true }) }), 4000);
+      const data = res.ok ? await res.json() : null;
+      ok = !!(data && data.ok && data.ready);
+    } catch (e) {}
+    meetCache[u] = { ok, at: Date.now() };
+    return ok;
+  }
+  async function kickMeeting() {
+    const cfg = loadConfig();
+    if (!cfg.room || !(await probeMeeting(cfg))) return { ok: false };
+    try {
+      const res = await limit(fetch(meetUrl(cfg), { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify({ room: cfg.room }) }), 15000);
+      const data = await res.json().catch(() => null);
+      return res.ok && data ? data : { ok: false, status: res.status };
+    } catch (e) {
+      return { ok: false };
+    }
+  }
   function publicConfig(cfg) {
     const { apiKey, rooms, ...rest } = cfg;
     const ua = navigator.userAgent || '';
@@ -249,6 +281,7 @@ window.sampleAi = module.exports; })();
       rooms: (rooms || []).map((r) => ({ room: r.room, title: r.title || '' })),
       hasApiKey: false,
       serverAi: serverKnown(cfg),
+      serverMeeting: meetKnown(cfg),
       dbDefault: dbDefault(),
       demo: !!cfg.demo,
       profile,
@@ -466,7 +499,7 @@ window.sampleAi = module.exports; })();
 
   const withProbe = async () => {
     const cfg = loadConfig();
-    await probeServer(cfg);
+    await Promise.all([probeServer(cfg), probeMeeting(cfg)]);
     return publicConfig(cfg);
   };
   window.WEB = true;
@@ -482,6 +515,7 @@ window.sampleAi = module.exports; })();
       return true;
     },
     llm: (req) => callClaude(req || {}),
+    kickMeeting: () => kickMeeting(),
     diagnose: () => diagnose(),
     wipeLocal: async () => wipeLocal(),
     testDb: (url, key) => testDb(url, key),
@@ -494,7 +528,7 @@ window.sampleAi = module.exports; })();
 })();
 
 ;
-// かわりに会議 — 会議エンジン（画面からも Node のテストからも使える）
+// MeetForMe — 会議エンジン（画面からも Node のテストからも使える）
 // 重要な設計: 各エージェントの呼び出しには「その担当者の考え」と「公開された会議ログ」しか渡さない。
 // 進行役（合体案づくり・推薦理由の説明）には公開情報しか渡さない。
 (function (root, factory) {
@@ -516,13 +550,22 @@ window.sampleAi = module.exports; })();
     if (ev.score >= 1 && ev.score <= 5) return ev.score;
     return ev.rating === 'like' ? 4 : ev.rating === 'no' ? 1 : 3;
   }
+  // 2回の採点の平均は 3.5 のような半点になるので、0.5刻みで受け取る
+  const clampHalf = (v) => {
+    const n = Math.round(Number(v) * 2) / 2;
+    return n >= 1 && n <= 5 ? n : 3;
+  };
   const MAX_MUST = 3;
   const INTERVIEW_ITEMS = ['案', '好きな点・不安', '外したくない条件', '実装でできること'];
   // 代理人の返答の末尾にある <<済:1,2>> を取り出し、表示用の文章と分ける
   function splitCovered(text) {
-    const m = /<<済[:：]([\d,、\s]*)>>/.exec(text || '');
+    const t = text || '';
+    const m = /<<済[:：]([\d,、\s]*)>>/.exec(t);
     const covered = m ? [...new Set((m[1].match(/\d/g) || []).map(Number).filter((n) => n >= 1 && n <= INTERVIEW_ITEMS.length))] : null;
-    return { text: (text || '').replace(/<<済[:：][^>]*>>/g, '').trim(), covered };
+    // <<選:A|B|C>> は、本人が押して答えられる選択肢（最大4つ、1つ30字まで）
+    const c = /<<選[:：]([^>]*)>>/.exec(t);
+    const choices = c ? [...new Set(c[1].split(/[|｜]/).map((x) => x.trim()).filter((x) => x && x.length <= 30))].slice(0, 4) : [];
+    return { text: t.replace(/<<[済選][:：][^>]*>>/g, '').trim(), covered, choices };
   }
 
   const now = () => Date.now();
@@ -558,6 +601,22 @@ window.sampleAi = module.exports; })();
     return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
   }
 
+  // AIの文章の後始末。画面に出す前に、内部用の印を取り除く
+  // ・Web検索の引用の印（<cite index="…">…</cite>）を外す（中の文は残す）
+  const stripCite = (text) => String(text == null ? '' : text).replace(/<\/?cite\b[^>]*>/g, '');
+  // ・案の内部の番号（mix1-2 など）を、案の名前に置き換える。AIには番号を渡しているので、文章に番号のまま書いてくることがある
+  function cleanText(text, cand) {
+    let t = stripCite(text);
+    const ids = Object.keys(cand || {}).filter((id) => cand[id] && cand[id].title).sort((a, b) => b.length - a.length);
+    for (const id of ids) {
+      if (!t.includes(id)) continue;
+      const e = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const name = '「' + cand[id].title + '」';
+      t = t.replace(new RegExp('「\\s*' + e + '\\s*」', 'g'), name).replace(new RegExp('(^|[^A-Za-z0-9_-])' + e + '(?![A-Za-z0-9_-])', 'g'), '$1' + name);
+    }
+    return t;
+  }
+
   async function askJson(llm, system, user, maxTokens, onPartial, extra) {
     let lastErr;
     for (let i = 0; i < 3; i++) {
@@ -567,7 +626,8 @@ window.sampleAi = module.exports; })();
       if (extra) Object.assign(req, extra);
       if (onPartial) req.onText = (t) => { try { onPartial(partialStatement(t)); } catch (e) {} };
       const raw = await llm(req);
-      const [text, src] = String(raw || '').split('§SRC§');
+      const [text0, src] = String(raw || '').split('§SRC§');
+      const text = stripCite(text0); // Web検索の引用の印（<cite …>）が文章に混ざるので外す
       try {
         const out = parseJson(text);
         if (src) out.__sources = src.split(/\s+/).filter((u) => /^https?:\/\//.test(u)).slice(0, 8);
@@ -672,6 +732,7 @@ window.sampleAi = module.exports; })();
       '- 本人が言っていないことを決めつけない。評価や説教はしない。',
       '- 外したくない条件は最大' + MAX_MUST + 'つまで。多いときは優先順位を聞く。',
       '- 4項目が聞けたら、それ以上質問を足さず、「『預ける内容を確認する』ボタンを押してください」と案内する。本人が途中で預けたいと言ったら止めない（足りない所は推測として扱われる）。それ以降は本人が「やっぱりこう思う」と言ってきたら受け止める。',
+      '- 質問をしたときは、その質問への答えの候補を2〜4個、<<選:候補1|候補2|候補3>> の形で1行に書く。本人はこれをボタンとして押すだけで答えられる。候補は本人の言葉としてそのまま送られるので、「締切までに確実に動くこと」「特になし」のように、短い答えの形（1つ30字まで）で、その案とお題に合わせて具体的に書く。案そのものを聞く質問など、候補を出せないときはこの行を書かない。この行も本人には文章としては表示されない。',
       '- 返答の一番最後の行に、必ず <<済:1,2>> の形で、ここまでに本人から聞けた項目の番号だけを書く（1=案 2=好きな点と不安な点 3=外したくない条件 4=実装でできること）。まだ何も聞けていなければ <<済:>> と書く。この行は本人には表示されない。',
       '',
       context || '',
@@ -871,7 +932,7 @@ window.sampleAi = module.exports; })();
       }
       const supportRate = wsum ? ssum / wsum / 5 : 0.6;
       const j = (judge || {})[c.id] || {};
-      const marks = crits.map((k, i) => ({ name: k.name, weight: k.weight, score: clamp5(j.marks && j.marks[i]), note: str(j.notes && j.notes[i]) }));
+      const marks = crits.map((k, i) => ({ name: k.name, weight: k.weight, score: clampHalf(j.marks && j.marks[i]), note: str(j.notes && j.notes[i]), spread: Number(j.spread && j.spread[i]) || 0 }));
       const cw = marks.reduce((t, m) => t + m.weight, 0);
       const crit = marks.length && cw ? r1((marks.reduce((t, m) => t + m.weight * m.score, 0) / cw / 5) * RATIO.crit) : null;
       const support = r1(supportRate * (crit === null ? 100 : RATIO.support));
@@ -926,7 +987,36 @@ window.sampleAi = module.exports; })();
   }
 
   // 進行役AIが、各案を評価基準ごとに5段階で採点する（公開情報だけを見る）
+  // 採点のぶれを減らす: 同じ採点を2回行い、基準ごとに平均を取る。2回の差（spread）も残して画面に出す
+  function mergeJudges(a, b, n) {
+    if (!b) return a;
+    const out = {};
+    for (const id of Object.keys(a)) {
+      const x = a[id];
+      const y = b[id];
+      if (!y) {
+        out[id] = x;
+        continue;
+      }
+      out[id] = {
+        marks: x.marks.map((m, i) => (m + y.marks[i]) / 2),
+        spread: x.marks.map((m, i) => Math.abs(m - y.marks[i])),
+        notes: x.notes,
+        comment: x.comment,
+      };
+    }
+    out.__twice = true;
+    return out;
+  }
   async function facilitatorJudge(ctx, env, criteria) {
+    // 2回目は画面に流さず、失敗しても1回目だけで進める（会議を止めない）
+    const [first, second] = await Promise.all([
+      judgeOnce(ctx, env, criteria, true),
+      judgeOnce(ctx, env, criteria, false).catch(() => null),
+    ]);
+    return { judge: mergeJudges(first, second, criteria.length), passes: second ? [first, second] : [first] };
+  }
+  async function judgeOnce(ctx, env, criteria, live) {
     const cands = activeCands(env.snap);
     const system = [
       'あなたは会議の中立な進行役であり、審査員の目線で案を採点します。特定のメンバーの味方はしません。あなたが知っているのは公開された内容だけです。',
@@ -962,7 +1052,7 @@ window.sampleAi = module.exports; })();
     ].join('\n');
     let judge = {};
     for (let attempt = 0; attempt < 2; attempt++) {
-      const out = await askJson(ctx.llm, system, user, 8000, (text) => ctx.onLive && ctx.onLive({ speakerName: '進行役AI', text }));
+      const out = await askJson(ctx.llm, system, user, 8000, live ? (text) => ctx.onLive && ctx.onLive({ speakerName: '進行役AI', text }) : null);
       judge = {};
       for (const x of Array.isArray(out.scores) ? out.scores : []) {
         if (!x || !env.snap.cand[x.candId] || !Array.isArray(x.marks) || x.marks.length < criteria.length) continue;
@@ -976,6 +1066,7 @@ window.sampleAi = module.exports; })();
   async function postMsg(ctx, env, m) {
     const id = uid('g');
     const data = { round: env.round, at: now(), ...m };
+    if (data.text) data.text = cleanText(data.text, env.snap.cand);
     await ctx.store.put('msg', id, data);
     env.snap.msg[id] = data;
     if (ctx.onLive) ctx.onLive(null);
@@ -1109,6 +1200,28 @@ window.sampleAi = module.exports; })();
 
   // 進行役AIが、各案が技術的に作れるかを調べ、締切までに作れる範囲を説明する
   // （デスクトップ版でAPIキーがあるときは、Web検索で必要なAPIやライブラリを確かめる）
+  // 実現性の結果を、会議に出ている案に結び付ける。番号の書き方がずれていても拾う
+  function feasItems(out, snap) {
+    let list = out && out.items;
+    if (list && !Array.isArray(list) && typeof list === 'object') list = Object.entries(list).map(([k, v]) => ({ candId: k, ...(v || {}) }));
+    const norm = (v) => str(v).replace(/[\[\]［］【】「」\s]/g, '').toLowerCase();
+    const ids = Object.keys(snap.cand).filter((id) => !snap.cand[id].dropped);
+    const res = [];
+    const seen = new Set();
+    for (const x of Array.isArray(list) ? list : []) {
+      if (!x || typeof x !== 'object') continue;
+      const key = norm(x.candId || x.id || x.cand || x.candidateId);
+      const ttl = norm(x.title || x.name);
+      let id = ids.find((i) => norm(i) === key);
+      if (!id && key) id = ids.find((i) => norm(snap.cand[i].title) === key);
+      if (!id && ttl) id = ids.find((i) => norm(snap.cand[i].title) === ttl);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      res.push({ ...x, candId: id });
+    }
+    return res;
+  }
+
   async function facilitatorFeasibility(ctx, env) {
     const cands = activeCands(env.snap);
     const system = [
@@ -1151,9 +1264,20 @@ window.sampleAi = module.exports; })();
       return;
     }
     const sources = out.__sources || [];
-    for (const x of Array.isArray(out.items) ? out.items : []) {
-      const c = x && env.snap.cand[x.candId];
-      if (!c || c.dropped) continue;
+    // AIが案の番号を [xxx] のように括弧付きで返したり、題名で返したりしても、対応する案を見つける
+    let items = feasItems(out, env.snap);
+    if (!items.length) {
+      // 1件も案に結び付かなかったときは、検索なしでもう一度だけ聞く（列が空のまま残るのを防ぐ）
+      try {
+        const again = await askJson(ctx.llm, system, user + '\n\n※ candId には、上の【会議に出ている案】の [ ] の中の文字列を、括弧なしでそのまま入れてください。', 8000, null, {});
+        items = feasItems(again, env.snap);
+        if (!str(out.statement)) out.statement = again.statement;
+      } catch (e) {
+        if (!e.unreadable) throw e;
+      }
+    }
+    for (const x of items) {
+      const c = env.snap.cand[x.candId];
       const data = { ...c, feas: { verdict: FEAS_LABEL[x.verdict] ? x.verdict : 'partial', needs: str(x.needs), mvp: str(x.mvp), later: str(x.later), risk: str(x.risk), searched: sources.length > 0, sources } };
       await ctx.store.put('cand', x.candId, data);
       env.snap.cand[x.candId] = data;
@@ -1211,14 +1335,15 @@ window.sampleAi = module.exports; })();
       out = { reason: '（理由の説明を作れませんでした。点数の内訳をご覧ください。）' };
     }
     const plan = out.plan && typeof out.plan === 'object' ? out.plan : {};
+    const tidy = (x) => cleanText(str(x), env.snap.cand);
     return {
       plan: {
-        steps: str(plan.steps),
-        roles: (Array.isArray(plan.roles) ? plan.roles : []).map((r) => ({ name: str(r.name), role: str(r.role) })).filter((r) => r.name && r.role),
+        steps: tidy(plan.steps),
+        roles: (Array.isArray(plan.roles) ? plan.roles : []).map((r) => ({ name: str(r.name), role: tidy(r.role) })).filter((r) => r.name && r.role),
       },
-      reason: str(out.reason),
-      influences: (Array.isArray(out.influences) ? out.influences : []).map((i) => ({ name: str(i.name), point: str(i.point) })).filter((i) => i.name && i.point),
-      conflict: str(out.conflict),
+      reason: tidy(out.reason),
+      influences: (Array.isArray(out.influences) ? out.influences : []).map((i) => ({ name: str(i.name), point: tidy(i.point) })).filter((i) => i.name && i.point),
+      conflict: tidy(out.conflict),
     };
   }
 
@@ -1248,6 +1373,9 @@ window.sampleAi = module.exports; })();
     }
     const participants = Object.keys(snap.brief).filter((id) => snap.member[id]);
     if (participants.length < 2) throw new Error('考えを預けたメンバーが2人以上そろうと会議を始められます。');
+    // 決定のあとは、共有の保存先から本音（好きな点・不安・条件など）を消している。やり直すには、各自のアプリから預け直されている必要がある
+    const gone = participants.filter((id) => snap.brief[id].scrubbed);
+    if (gone.length) throw new Error(`決定のあと、共有の保存先から本音を消しました。${gone.map((id) => (snap.member[id] || {}).name || '?').join('・')}さんがアプリを開くと自動で預け直されるので、そのあとでやり直してください。`);
     const full = (opts && opts.mode) === 'full' || !Object.keys(snap.cand).length || st.phase === 'collecting';
     // 途中で止まった会議の「続きから」: 前回の進み具合（st.ck）が残っていて、参加者が同じなら、済んだ段階を飛ばす
     const ck0 = st.ck;
@@ -1259,6 +1387,12 @@ window.sampleAi = module.exports; })();
     ctx = {
       ...ctx,
       llm: async (req) => {
+        // サーバーで進めるときは、1回の実行に使える時間が限られる。時間が来たら、次のAI呼び出しの前で区切り、続きは次の実行に任せる
+        if (ctx0.stopAt && now() > ctx0.stopAt) {
+          const e = new Error('時間の区切りで一度止めました。続きから再開します。');
+          e.pause = true;
+          throw e;
+        }
         const t0 = now();
         // 一時的な失敗（通信の途切れ・混雑）は、少し待って自動でやり直す。設定の誤りや回数の上限は、やり直しても直らないのですぐ止める
         let out;
@@ -1283,7 +1417,7 @@ window.sampleAi = module.exports; })();
         return out;
       },
     };
-    await setState(ctx, env, { runner: me.id, runnerName: me.name, phase: 'meeting', error: '', runStartedAt: now() });
+    await setState(ctx, env, { runner: me.id, runnerName: me.name, phase: 'meeting', error: '', paused: 0, runStartedAt: resume && st.runStartedAt ? st.runStartedAt : now() });
     // 同時に2人が始めた場合に備えて、少し待ってから自分が進行役になれたか確かめる
     await sleep(ctx.lockWait === undefined ? 1200 : ctx.lockWait);
     const check = (await snapshot(store)).state.main || {};
@@ -1302,7 +1436,8 @@ window.sampleAi = module.exports; })();
       if (full && resume) {
         env.wantParts = ck.wantParts.slice();
         await progress('止まったところから会議を再開しています', env.state.stage || 'round1', '');
-        await postMsg(ctx, env, { speaker: 'system', speakerName: 'システム', type: 'system', text: '止まったところから、会議を再開します' });
+        // 時間の区切りからの続き（サーバーで進めるとき）は、止まったわけではないのでログには書かない
+        if (!st.paused) await postMsg(ctx, env, { speaker: 'system', speakerName: 'システム', type: 'system', text: '止まったところから、会議を再開します' });
       }
       if (full) {
         if (!resume) {
@@ -1407,12 +1542,22 @@ window.sampleAi = module.exports; })();
       await progress('進行役AIが推薦案をまとめています', 'explain', '進行役AI');
       const criteria = parseCriteria(snap);
       let judge = {};
+      let passes = [];
       if (criteria.length) {
         await progress('進行役AIが評価基準に沿って採点しています', 'explain', '進行役AI');
-        judge = await facilitatorJudge(ctx, env, criteria);
+        const jr = await facilitatorJudge(ctx, env, criteria);
+        judge = jr.judge;
+        passes = jr.passes;
         await progress('進行役AIが推薦案をまとめています', 'explain', '進行役AI');
       }
       const rec = recommend(activeCands(snap), snap.eval, participants, judge, criteria);
+      // 2回の採点のどちらか片方だけで決めると1位が変わる場合は、点差があっても「僅差」として扱い、全員に聞き直す
+      rec.judgedTimes = passes.length;
+      if (passes.length > 1) {
+        const tops = passes.map((p) => recommend(activeCands(snap), snap.eval, participants, p, criteria).topId);
+        rec.unstable = tops.some((t) => t !== rec.topId);
+        if (rec.unstable && rec.runnerUpId) rec.tie = true;
+      }
 
       // 上位の案に、代理人の推測で低い評価が付いているときは、本人に確かめる（推測のままでは案を落とさない）
       const upper = rec.table.filter((t) => !t.excluded).sort((x, y) => y.total - x.total).slice(0, 3);
@@ -1464,12 +1609,46 @@ window.sampleAi = module.exports; })();
       notify('');
       return recommendation;
     } catch (e) {
+      if (e && e.pause) {
+        // 失敗ではなく、時間の区切り。進み具合（ck）を残したまま進行役を空け、次の実行が続きから進める
+        try {
+          await setState(ctx, env, { runner: null, runnerName: '', phase: 'collecting', error: '', paused: now(), progress: '続きを準備しています' });
+        } catch {}
+        notify('');
+        return { paused: true };
+      }
       try {
-        await setState(ctx, env, { runner: null, runnerName: '', phase: Object.keys(env.snap.cand).length && env.state.recommendation ? 'review' : 'collecting', error: String((e && e.message) || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), failedAt: now(), progress: '', stage: '', speaker: '' });
+        await setState(ctx, env, { runner: null, runnerName: '', paused: 0, phase: Object.keys(env.snap.cand).length && env.state.recommendation ? 'review' : 'collecting', error: String((e && e.message) || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), failedAt: now(), progress: '', stage: '', speaker: '' });
       } catch {}
       notify('');
       throw e;
     }
+  }
+
+  // いま会議を自動で進めるべきか、進めるならどの形か（サーバーで会議を進めるときに使う。画面側の自動開始と同じ決まり）
+  function autoMode(snap, t) {
+    const st = snap.state.main || { phase: 'collecting', round: 0 };
+    const room = (snap.room && snap.room.main) || {};
+    if (!snap.room || !snap.room.main) return null;
+    if (st.error) return null; // 止まったままのときは、自動では繰り返さない
+    if (st.runner && t - (st.runnerAt || 0) < LOCK_MS) return null; // だれかが進めている
+    const ids = Object.keys(snap.brief).filter((id) => snap.member[id]).sort();
+    if (ids.length < 2 || ids.some((id) => snap.brief[id].scrubbed)) return null;
+    if (st.paused && canResume(snap)) return { mode: 'resume' };
+    const size = Number(room.teamSize) || 0;
+    const due = !!room.deadlineAt && t >= room.deadlineAt;
+    if (st.phase === 'collecting' || !st.phase) {
+      if ((size && ids.length >= size) || due) return { mode: canResume(snap) && st.paused ? 'resume' : 'full' };
+      return null;
+    }
+    if (st.phase === 'review') {
+      const last = st.lastRunAt || 0;
+      if ((st.participants || []).length && ids.some((id) => !st.participants.includes(id))) return { mode: 'full', late: true };
+      if (ids.some((id) => (snap.brief[id].editedAt || 0) > last)) return { mode: 'full' };
+      const pending = ids.some((id) => (snap.brief[id].updates || []).some((u) => u.at > last) && !Object.values(snap.question).some((q) => q.memberId === id && q.status === 'open'));
+      if (pending) return { mode: 'rerun' };
+    }
+    return null;
   }
 
   // 本人が自分のエージェントに追加で伝える（確認質問への答え・一言コメント・「やっぱりこう思う」）
@@ -1477,6 +1656,7 @@ window.sampleAi = module.exports; })();
     const snap = await snapshot(ctx.store);
     const brief = snap.brief[ctx.me.id];
     if (!brief) throw new Error('まだ考えを預けていません。');
+    if (brief.scrubbed) throw new Error('預けた内容を戻しているところです。数秒待ってから、もう一度お試しください。');
     const updates = (brief.updates || []).concat([{ at: now(), text: str(text), q: q || '' }]);
     await ctx.store.put('brief', ctx.me.id, { ...brief, updates });
   }
@@ -1492,6 +1672,22 @@ window.sampleAi = module.exports; })();
   }
 
   // 承認。全員が今の回の推薦を承認したら決定になる
+  // 決定したら、共有の保存先に残っている本音（好きな点・不安な点・外したくない条件・実装でできること・追加で伝えたこと）と、
+  // 代理人からの確認のやり取りを消す。案そのもの（題名・概要など、会議で公開された部分）だけを残す
+  const PRIVATE_KEYS = ['likes', 'worries', 'mustHaves', 'wantFromOthers', 'acceptCondition', 'impl', 'updates'];
+  async function scrubPrivate(store, snap) {
+    let n = 0;
+    for (const id of Object.keys(snap.brief)) {
+      const b = snap.brief[id];
+      if (!b || b.scrubbed) continue;
+      await store.put('brief', id, { ideas: b.ideas || [], scrubbed: true, scrubbedAt: now() });
+      n++;
+    }
+    for (const qid of Object.keys(snap.question || {})) {
+      if (store.del) await store.del('question', qid);
+    }
+    return n;
+  }
   async function approve(ctx) {
     const snap = await snapshot(ctx.store);
     const st = snap.state.main;
@@ -1504,6 +1700,7 @@ window.sampleAi = module.exports; })();
     if (all && st2.phase === 'review' && !st2.runner) {
       const cand = after.cand[st2.recommendation.topId];
       await ctx.store.put('state', 'main', { ...st2, phase: 'decided', decidedAt: now(), decidedCandId: st2.recommendation.topId });
+      await scrubPrivate(ctx.store, after);
       await ctx.store.put('msg', uid('g'), {
         round: st2.round,
         at: now(),
@@ -1537,9 +1734,14 @@ window.sampleAi = module.exports; })();
     parseCriteria,
     MAX_MUST,
     INTERVIEW_ITEMS,
+    scrubPrivate,
+    PRIVATE_KEYS,
+    mergeJudges,
+    feasItems,
     splitCovered,
     parseJson,
     paragraphs,
+    cleanText,
     snapshot,
     sortedMsgs,
     activeCands,
@@ -1553,6 +1755,7 @@ window.sampleAi = module.exports; })();
     recommend,
     compareTop,
     canResume,
+    autoMode,
     runMeeting,
     addUpdate,
     answerQuestion,
@@ -1562,7 +1765,7 @@ window.sampleAi = module.exports; })();
 });
 
 ;
-// かわりに会議 — 画面
+// MeetForMe — 画面
 /* global Engine, api */
 (function () {
   const S = { cfg: {}, priv: {}, snap: null, tab: 'room', busy: '', progress: '', error: '', notice: '', drafts: {}, dirty: false, teamSize: 3 };
@@ -1675,7 +1878,7 @@ window.sampleAi = module.exports; })();
     if (S.todoInit && fresh.length) {
       try {
         if (canNotify() && (document.hidden || !document.hasFocus())) {
-          notifyUser('かわりに会議：あなたの番です', fresh[0].text);
+          notifyUser('MeetForMe：あなたの番です', fresh[0].text);
         }
       } catch (e) {}
     }
@@ -1715,6 +1918,7 @@ window.sampleAi = module.exports; })();
     S.drafts = {};
     S.open = {};
     S.editTopic = false;
+    S.takeLink = '';
     S.edit = null;
     S.formIdeas = 1;
     S.autoSig = '';
@@ -1754,7 +1958,7 @@ window.sampleAi = module.exports; })();
         const keys = urgent.map((t) => t.key).join('|');
         if (prev && keys && keys !== prev.keys) {
           try {
-            if (canNotify()) notifyUser('かわりに会議：あなたの番です', `「${roomTitle(r)}」${urgent[0].text}`);
+            if (canNotify()) notifyUser('MeetForMe：あなたの番です', `「${roomTitle(r)}」${urgent[0].text}`);
           } catch (e) {}
         }
         S.peek[r.room] = { n: urgent.length, keys, decided: (snap.state.main || {}).phase === 'decided' };
@@ -1834,10 +2038,102 @@ window.sampleAi = module.exports; })();
     return h('textarea', { ...attrs, value: S.drafts[key] || '', oninput: (e) => (S.drafts[key] = e.target.value) });
   }
 
-  async function savePriv() {
-    await api.savePrivate(S.cfg.room, S.priv);
+  // ---------- 端末の引き継ぎ ----------
+  // 代理人との会話と預かりメモは、ふだんはこの端末にだけある。「引き継ぎリンク」を作ると、それを暗号化して共有の保存先に置き、
+  // リンクを開いた別の端末で続きができる。鍵はリンクの中にだけあり、保存先には暗号文しか置かない（ほかのメンバーも運営者も読めない）
+  const WEB_BASE = 'https://meetforme.vercel.app/';
+  const b64enc = (buf) => {
+    const u = new Uint8Array(buf);
+    let t = '';
+    for (let i = 0; i < u.length; i += 8192) t += String.fromCharCode.apply(null, u.subarray(i, i + 8192));
+    return btoa(t).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+  const b64dec = (str) => Uint8Array.from(atob(String(str).replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+  const canSync = () => !!(window.crypto && crypto.subtle);
+  const syncCryptoKey = (k) => crypto.subtle.importKey('raw', b64dec(k), 'AES-GCM', false, ['encrypt', 'decrypt']);
+  function syncBody() {
+    const { syncKey, syncAt, ...rest } = S.priv;
+    return { ...rest, chat: (rest.chat || []).slice(-40) };
+  }
+  let syncTimer = null;
+  function queueSync() {
+    if (!S.priv || !S.priv.syncKey || !canSync()) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => pushSync().catch(() => {}), 800);
+  }
+  async function pushSync() {
+    if (!S.priv || !S.priv.syncKey || !canSync()) return false;
+    const room = S.cfg.room;
+    const key = await syncCryptoKey(S.priv.syncKey);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const at = Date.now();
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(syncBody())));
+    S.priv.syncAt = at;
+    await api.savePrivate(room, S.priv);
+    await api.store.put('priv', S.cfg.memberId, { v: 1, iv: b64enc(iv), ct: b64enc(ct), at });
+    return true;
+  }
+  // 別の端末で進んだ内容があれば取り込む（新しいほうが勝つ）
+  async function pullSync() {
+    const d = S.priv && S.priv.syncKey && S.snap && S.snap.priv && S.snap.priv[S.cfg.memberId];
+    if (!d || !(d.at > (S.priv.syncAt || 0)) || S.busy || !canSync()) return false;
+    try {
+      const key = await syncCryptoKey(S.priv.syncKey);
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64dec(d.iv) }, key, b64dec(d.ct));
+      const body = JSON.parse(new TextDecoder().decode(pt));
+      S.priv = { ...body, syncKey: S.priv.syncKey, syncAt: d.at };
+      if (!Array.isArray(S.priv.chat) || !S.priv.chat.length) S.priv.chat = [{ role: 'assistant', content: GREETING(S.cfg.name) }];
+      await api.savePrivate(S.cfg.room, S.priv);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  async function makeTakeLink() {
+    if (!canSync()) throw new Error('この環境では暗号化が使えないため、引き継ぎリンクを作れません。');
+    if (!S.priv.syncKey) S.priv.syncKey = b64enc(crypto.getRandomValues(new Uint8Array(32)));
+    await pushSync();
+    const o = { r: S.cfg.room, m: S.cfg.memberId, n: S.cfg.name, k: S.priv.syncKey };
+    if (!(S.cfg.dbDefault && S.cfg.dbDefault.url === S.cfg.supabaseUrl)) Object.assign(o, { u: S.cfg.supabaseUrl || '', s: S.cfg.supabaseKey || '' });
+    const base = window.WEB ? location.origin + location.pathname : WEB_BASE;
+    return base + '#take=' + b64enc(new TextEncoder().encode(JSON.stringify(o)));
+  }
+  // 引き継ぎリンクから開いたとき: 同じ人として会議に入り、暗号化された会話を取り込む
+  async function takeOver(code) {
+    let o;
+    try {
+      o = JSON.parse(new TextDecoder().decode(b64dec(code)));
+    } catch (e) {
+      o = null;
+    }
+    if (!o || !o.r || !o.m || !o.k) return fail('引き継ぎのリンクを読めませんでした。もう一度、元の端末でリンクを作り直してください。');
+    if (!window.WEB) return fail('引き継ぎのリンクは、ブラウザ（Web版）で開いてください。');
+    if ((S.cfg.rooms || []).length && S.cfg.memberId !== o.m) return fail('このブラウザは、すでに別の人として会議に参加しています。引き継ぐには、別のブラウザで開くか、先に「設定・招待」の「この端末のデータを消す」を行ってください。');
+    const db = o.u !== undefined ? { url: o.u, key: o.s || '' } : S.cfg.dbDefault || { url: '', key: '' };
+    S.cfg = await api.saveConfig({ memberId: o.m, name: o.n || S.cfg.name || '', room: o.r, supabaseUrl: db.url, supabaseKey: db.key });
+    const cur = (await api.getPrivate(o.r)) || {};
+    await api.savePrivate(o.r, { ...cur, syncKey: o.k, syncAt: cur.syncKey === o.k ? cur.syncAt || 0 : 0 });
+    resetView();
+    await enterRoom();
+    S.startMode = '';
+    S.tab = 'room';
+    S.notice = S.netError ? '' : 'この端末に引き継ぎました。続きから話せます。どちらの端末で進めても、もう一方に反映されます。';
   }
 
+  async function savePriv() {
+    await api.savePrivate(S.cfg.room, S.priv);
+    queueSync();
+  }
+
+  // 決定のあとは共有の保存先から本音を消している。決定が取り消されたら、この端末に残っている自分の預かりメモを預け直す
+  async function restoreBrief() {
+    const me = S.cfg && S.cfg.memberId;
+    const b = me && S.snap && S.snap.brief[me];
+    const st = (S.snap && S.snap.state && S.snap.state.main) || {};
+    if (!b || !b.scrubbed || st.phase === 'decided' || !S.priv || !S.priv.brief) return;
+    await api.store.put('brief', me, S.priv.brief);
+    S.snap.brief[me] = S.priv.brief;
+  }
   async function refresh() {
     try {
       S.snap = await Engine.snapshot(api.store);
@@ -1849,6 +2145,8 @@ window.sampleAi = module.exports; })();
         api.saveConfig({ roomTitle: room.theme }).then((c) => { if (c.room === S.cfg.room) S.cfg = c; renderSide(); });
       }
       S.netError = '';
+      await restoreBrief();
+      await pullSync();
     } catch (e) {
       S.netError = errText(e);
       if (!S.snap) S.snap = await Engine.snapshot({ all: async () => [] });
@@ -1899,10 +2197,11 @@ window.sampleAi = module.exports; })();
     render();
   }
 
-  function sendChat() {
-    const text = (S.drafts.chat || '').trim();
-    if (!text) return;
-    S.drafts.chat = '';
+  function sendChat(picked) {
+    const text = (typeof picked === 'string' ? picked : S.drafts.chat || '').trim();
+    if (!text || S.busy) return;
+    if (typeof picked !== 'string') S.drafts.chat = '';
+    S.priv.choices = [];
     S.priv.chat.push({ role: 'user', content: text });
     run('chat', async () => {
       await savePriv();
@@ -1916,6 +2215,7 @@ window.sampleAi = module.exports; })();
       const sp = Engine.splitCovered(reply);
       if (sp.covered) S.priv.covered = [...new Set([...(S.priv.covered || []), ...sp.covered])];
       S.priv.chat.push({ role: 'assistant', content: sp.text || '（応答が空でした）' });
+      S.priv.choices = sp.choices || [];
       await savePriv();
     });
   }
@@ -1946,7 +2246,12 @@ window.sampleAi = module.exports; })();
       } else if (deposited >= 2 && (deposited >= S.teamSize || hadMeeting)) {
         S.tab = 'meeting';
         render();
-        await Engine.runMeeting(ctx(), { mode: 'full' });
+        // サーバーで進められるときは合図だけ送る（この画面を閉じても会議は進む）。だめなら、これまでどおりこの画面で進める
+        const kicked = S.cfg.serverMeeting && api.kickMeeting && !window.PROTO ? await api.kickMeeting() : null;
+        if (kicked && kicked.ok !== false) {
+          S.kickAt = Date.now();
+          S.notice = '預けました。会議はサーバーで進みます。この画面を閉じても大丈夫です。';
+        } else await Engine.runMeeting(ctx(), { mode: 'full' });
       } else {
         S.tab = 'meeting';
       }
@@ -2309,8 +2614,40 @@ window.sampleAi = module.exports; })();
       up.length ? h('div', {}, h('span', { class: 'gap-l' }, 'この案が上だった項目'), h('ul', { class: 'plain' }, up.map(row))) : null,
       down.length ? h('div', {}, h('span', { class: 'gap-l' }, '次点が上だった項目'), h('ul', { class: 'plain' }, down.map(row))) : null,
       !up.length && !down.length ? h('div', { class: 'hint' }, 'どの項目も同じ点でした。') : null,
-      h('div', { class: 'hint', style: 'margin-top:6px' }, '基準の点はAIが付けるので、会議をやり直すと変わることがあります。1.5点未満の差は「僅差」として扱い、上位2案を全員にもう一度聞きます。')
+      h('div', { class: 'hint', style: 'margin-top:6px' }, rec.judgedTimes > 1 ? '基準の点は、進行役AIが同じ採点を2回行った平均です（ぶれを減らすため）。2回のどちらか片方だけで決めると1位が変わる場合と、1.5点未満の差は「僅差」として扱い、上位2案を全員にもう一度聞きます。' : '基準の点はAIが付けるので、会議をやり直すと変わることがあります。1.5点未満の差は「僅差」として扱い、上位2案を全員にもう一度聞きます。'),
+      scoreRule()
     );
+  }
+  // 点の決め方と、その重みにしている理由
+  function scoreRule() {
+    return h(
+      'details',
+      { class: 'rule' },
+      h('summary', {}, '点の決め方と、この重みにしている理由'),
+      h('ul', { class: 'plain' },
+        h('li', {}, h('b', {}, '評価基準への合い方 70点： '), '幹事が決めた基準に合うかを、進行役AIが案の中身だけを見て採点します（誰の案かは知らせません）。審査や目的に合う案を選ぶ会議なので、こちらを主にしています。'),
+        h('li', {}, h('b', {}, 'メンバーの支持 30点： '), '基準の点が高くても、作る本人たちが乗り気でない案は進みません。そのための歯止めとして3割を充てています。'),
+        h('li', {}, h('b', {}, '代理人の推測は重み半分： '), '本人が言っていないことを代理人が推し量った評価は、本人の言葉より軽く扱います。推測だけで案が落ちないよう、低い推測が付いたときは本人に確かめます。'),
+        h('li', {}, h('b', {}, '本人が「嫌」と言った案は対象外： '), '点数で押し切らないためです。')
+      ),
+      h('div', { class: 'hint' }, 'この配分は、このアプリが決めた目安です。基準ごとの重みは、幹事が「新しさ ×2」のように変えられます。')
+    );
+  }
+  // 理由の最初の1文だけを取り出す
+  function firstSentence(text) {
+    const t = Engine.cleanText(text, S.snap && S.snap.cand).replace(/\s+/g, ' ').trim();
+    const sents = (t.match(/[^。！？!?]+[。！？!?]*/g) || [t]).map((x) => x.trim()).filter(Boolean);
+    // 「〜を推薦します。」「合計◯点で〜」のような前置きは飛ばし、決め手を言っている文を出す
+    const key = sents.find((x) => /決め手|理由は|強みは|からです/.test(x));
+    const body = key || sents.find((x) => !/推薦(します|です|は)|^合計[\d.]+点/.test(x)) || sents[0] || '';
+    return body.length > 110 ? body.slice(0, 108) + '…' : body;
+  }
+  // 次点との差を1行で
+  function gapLine(rec) {
+    const g = Engine.compareTop(rec);
+    if (!g) return null;
+    const best = g.rows.filter((x) => x.pts > 0).sort((a, b) => b.pts - a.pts)[0];
+    return h('div', { class: 'gap1' }, `次点は「${g.title}」（${g.diff > 0 ? '+' : ''}${g.diff}点の差）`, best ? h('span', { class: 'gapsub' }, `いちばん差がついたのは「${best.label}」`) : null);
   }
   function scoreTiles(rec, top) {
     const t = (rec.table || []).find((x) => x.candId === rec.topId);
@@ -2356,6 +2693,10 @@ window.sampleAi = module.exports; })();
         h('div', { class: 'agenthead' }, avatar(S.cfg.memberId), h('div', {}, h('b', {}, `${S.cfg.name}さんの代理人`), h('div', { class: 'hint' }, 'この会話はこの端末にだけ保存されます。預けるのはまとめたメモだけで、本音の部分（好きな点・不安な点・条件）は、ほかのメンバーの画面に出ません。')))
       ),
       msgs,
+      // 代理人の質問に、押すだけで答えられる選択肢。自分の言葉で書きたいときは下の入力欄を使う
+      !chatBusy && (S.priv.choices || []).length && !S.priv.pendingBrief
+        ? h('div', { class: 'quick', id: 'quick' }, h('span', { class: 'hint' }, '押して答える：'), S.priv.choices.map((c) => h('button', { class: 'chip', disabled: !!S.busy, onclick: () => sendChat(c) }, c)))
+        : null,
       h(
         'div',
         { class: 'composer' },
@@ -2384,7 +2725,7 @@ window.sampleAi = module.exports; })();
               '声で入力'
             )
           : null,
-        h('button', { class: 'btn', disabled: !!S.busy, onclick: sendChat }, '送信')
+        h('button', { class: 'btn', disabled: !!S.busy, onclick: () => sendChat() }, '送信')
       )
     );
 
@@ -2454,7 +2795,8 @@ window.sampleAi = module.exports; })();
   const STAGES = [['round1', '意見を出す'], ['merge', '合体案・新案'], ['feas', '作れるか調べる'], ['round2', '評価し直す'], ['explain', '推薦をまとめる']];
   // 文章を段落ごとに分けて表示する
   const paras = (text) => {
-    const ps = Engine.paragraphs(text);
+    // 前の版で保存された文章にも、案の内部の番号や引用の印が残っていることがあるので、表示のときにも取り除く
+    const ps = Engine.paragraphs(Engine.cleanText(text, S.snap && S.snap.cand));
     return ps.length ? ps.map((p) => h('p', { class: 'para' }, p)) : [text || ''];
   };
 
@@ -2493,7 +2835,20 @@ window.sampleAi = module.exports; })();
     const el = $('liveElapsed');
     const st = S.snap && S.snap.state && S.snap.state.main;
     if (el && st && st.runStartedAt) el.textContent = fmtSpan(Date.now() - st.runStartedAt);
+    const left = $('liveLeft');
+    if (left && st && st.runStartedAt) left.textContent = leftText(st);
   }, 1000);
+  // 会議の残り時間の目安。前回の実績があればそれを、なければ人数から見積もる（3人で約4分の実測に合わせた式）
+  function estimateMs(st) {
+    if (st.lastRunMs) return st.lastRunMs;
+    const n = Math.max(2, (st.participants || []).length || Object.keys((S.snap && S.snap.brief) || {}).length);
+    return (60 + 65 * n) * 1000;
+  }
+  function leftText(st) {
+    const left = estimateMs(st) - (Date.now() - st.runStartedAt);
+    if (left <= 20000) return 'まもなく終わります';
+    return `あと約${Math.max(1, Math.round(left / 60000))}分`;
+  }
   function liveCard(st) {
     const idx = STAGES.findIndex((x) => x[0] === st.stage);
     const msgs = Engine.sortedMsgs(S.snap).filter((m) => m.round === st.round);
@@ -2510,7 +2865,8 @@ window.sampleAi = module.exports; })();
         { class: 'livetime' },
         h('span', {}, idx >= 0 ? `いま ${idx + 1} / ${STAGES.length} 段階め` : '準備中'),
         st.runStartedAt ? h('span', {}, '開始から ', h('b', { id: 'liveElapsed' }, fmtSpan(Date.now() - st.runStartedAt))) : null,
-        h('span', {}, st.lastRunMs ? `前回の会議は${fmtSpan(st.lastRunMs)}で終わりました` : '人数が多いほど長くなります（数分が目安）')
+        st.runStartedAt ? h('b', { id: 'liveLeft', class: 'liveleft' }, leftText(st)) : null,
+        h('span', {}, st.lastRunMs ? `前回の会議は${fmtSpan(st.lastRunMs)}で終わりました` : `ふつう${Math.max(2, Math.round(estimateMs(st) / 60000) - 1)}〜${Math.round(estimateMs(st) / 60000) + 1}分で終わります`)
       ),
       h(
         'div',
@@ -2518,7 +2874,7 @@ window.sampleAi = module.exports; })();
         msgs.map(msgRow),
         speaker ? bubbleRow(speakerIdOf(speaker), speaker, text || '考えています…', true) : h('div', { class: 'm system' }, (st.progress || '準備しています') + '…')
       ),
-      h('div', { class: 'hint', style: 'margin-top:8px' }, st.runner === S.cfg.memberId ? '発言が出るたびにここへ流れます。終わると下に推薦案が出ます。会議が終わるまでこの画面を開いたままにしてください。' : `${st.runnerName || 'ほかのメンバー'}さんのアプリが会議を進めています。発言が出るたびにここへ流れます。`)
+      h('div', { class: 'hint', style: 'margin-top:8px' }, st.runner === S.cfg.memberId ? '発言が出るたびにここへ流れます。終わると下に推薦案が出ます。会議が終わるまでこの画面を開いたままにしてください。' : st.runner === 'server' ? 'サーバーが会議を進めています。発言が1つ終わるたびにここへ出ます。この画面を閉じても会議は進みます。' : `${st.runnerName || 'ほかのメンバー'}さんのアプリが会議を進めています。発言が出るたびにここへ流れます。`)
     );
   }
   // 話している途中の文章だけを差し替える（画面全体は描き直さない）
@@ -2596,7 +2952,7 @@ window.sampleAi = module.exports; })();
     const who = (c) => (c.owner === 'facilitator' ? '進行役AI' : `${(S.snap.member[c.owner] || {}).name || '?'}さんの代理人`);
     const copy = async () => {
       try {
-        await navigator.clipboard.writeText(JSON.stringify({ app: 'かわりに会議', exportedAt: new Date().toISOString(), snapshot: S.snap }, null, 1));
+        await navigator.clipboard.writeText(JSON.stringify({ app: 'MeetForMe', exportedAt: new Date().toISOString(), snapshot: S.snap }, null, 1));
         S.notice = '会議の記録をコピーしました。メモ帳などに貼り付けて保存できます。';
       } catch (e) {
         S.error = 'コピーできませんでした。';
@@ -2653,7 +3009,7 @@ window.sampleAi = module.exports; })();
     const rec = st.recommendation || {};
     const t = (rec.table || []).find((x) => x.candId === st.decidedCandId);
     const names = (st.participants || []).map((id) => (snap.member[id] || {}).name || '?');
-    const lines = [`【決定】${roomInfo().theme || 'かわりに会議'}`, '', `決まった案：${c.title || ''}`];
+    const lines = [`【決定】${roomInfo().theme || 'MeetForMe'}`, '', `決まった案：${c.title || ''}`];
     if (c.summary) lines.push(c.summary);
     lines.push('', `誰向けか：${Engine.partText(c.target) || '-'}`, `何を解決するか：${Engine.partText(c.problem) || '-'}`, `目玉機能：${Engine.partText(c.feature) || '-'}`);
     if (t && t.total !== undefined) lines.push('', `点数：${pointsText(t)}`);
@@ -2743,7 +3099,7 @@ window.sampleAi = module.exports; })();
     el.className = 'show';
     el.onclick = (e) => { if (e.target === el) close(); };
     try {
-      if (canNotify() && (document.hidden || !document.hasFocus())) notifyUser('かわりに会議：決定しました', `「${c.title}」に決まりました。`);
+      if (canNotify() && (document.hidden || !document.hasFocus())) notifyUser('MeetForMe：決定しました', `「${c.title}」に決まりました。`);
     } catch (e) {}
   }
   function checkDecided() {
@@ -2802,7 +3158,7 @@ window.sampleAi = module.exports; })();
     const dl = roomInfo().deadlineAt || 0;
     const remind = async () => {
       const names = yet.map((m) => m.name + 'さん').join('、');
-      const text = `【かわりに会議】${theme ? '「' + theme + '」の会議で、' : ''}${names ? names + 'の' : 'まだの人の'}入力を待っています。アプリを開いて、「① 考えを預ける」で考えを預けてください（5分ほどです）。全員が預けると、AIの代理人どうしの会議が自動で始まります。${dl ? `締切は${fmtDeadline(dl)}です。締切になると、預けた人だけで会議を始めます。` : ''}`;
+      const text = `【MeetForMe】${theme ? '「' + theme + '」の会議で、' : ''}${names ? names + 'の' : 'まだの人の'}入力を待っています。アプリを開いて、「① 考えを預ける」で考えを預けてください（5分ほどです）。全員が預けると、AIの代理人どうしの会議が自動で始まります。${dl ? `締切は${fmtDeadline(dl)}です。締切になると、預けた人だけで会議を始めます。` : ''}`;
       try {
         await navigator.clipboard.writeText(text);
         S.notice = 'お願いの文をコピーしました。チャットに貼り付けて送ってください。';
@@ -2850,6 +3206,7 @@ window.sampleAi = module.exports; })();
       { class: 'plain datanote', id: 'datanote' },
       h('li', {}, h('b', {}, 'AIに送られるもの：'), '代理人に話した内容と、会議のやり取りは、AIに考えさせるために Anthropic（Claude）へ送られます。'),
       h('li', {}, h('b', {}, '共有されるもの：'), '会議に必要な内容（案、預けた考え、代理人の発言、採点、決定）は、共有の保存先（Supabase）に置かれます。招待コードを知っている人は読めるので、招待コードはメンバー以外に渡さないでください。'),
+      h('li', {}, h('b', {}, '決まったら消えるもの：'), '全員が承認して決定すると、預けた本音（好きな点・不安な点・外したくない条件・実装でできること）と、代理人からの確認のやり取りは、共有の保存先から自動で消えます。残るのは、会議で公開された案・発言・採点・決定だけです。'),
       h('li', {}, h('b', {}, 'この端末だけに残るもの：'), '代理人との会話そのものと、名前などの設定は、この端末にだけ保存されます。'),
       h('li', {}, h('b', {}, '消し方：'), '幹事は「設定・招待」から、会議のデータをすべて削除できます。この端末に残った内容は「この端末のデータを消す」で消せます。'),
       h('li', {}, h('b', {}, '入れないでほしいもの：'), 'パスワード、クレジットカード番号、他人の個人情報などは入力しないでください。')
@@ -2955,10 +3312,10 @@ window.sampleAi = module.exports; })();
               h('div', { class: 'big' }, top.title, top.origin === 'merged' ? h('span', { class: 'tag mix' }, '合体案') : null, top.origin === 'ai' ? h('span', { class: 'tag new' }, 'AIの新案') : null),
               h('div', { class: 'recsum' }, top.summary),
               scoreTiles(rec, top),
-              h('h3', {}, 'なぜこの案か'),
-              h('div', { class: 'reason' }, paras(rec.reason)),
-              gapView(rec),
-              rec.tie && snap.cand[rec.runnerUpId] ? h('div', { class: 'q', style: 'margin-top:10px' }, h('p', {}, `「${snap.cand[rec.runnerUpId].title}」と評価が並んでいます。${rec.conflict ? '対立点：' + rec.conflict : ''}`)) : null
+              // 結論だけを先に見せる。理由は最初の1文、次点との差は1行。くわしい内訳は下の「くわしく見る」に入れる
+              h('div', { class: 'reason1' }, h('b', {}, '理由： '), firstSentence(rec.reason)),
+              gapLine(rec),
+              rec.tie && snap.cand[rec.runnerUpId] ? h('div', { class: 'q', style: 'margin-top:10px' }, h('p', {}, rec.unstable ? `2回の採点で、「${snap.cand[rec.runnerUpId].title}」と1位が入れ替わりました。僅差として扱います。` : `「${snap.cand[rec.runnerUpId].title}」と評価が並んでいます。${rec.conflict ? '対立点：' + rec.conflict : ''}`)) : null
             ),
             h(
               'div',
@@ -2989,7 +3346,10 @@ window.sampleAi = module.exports; })();
             const d = h(
               'details',
               { class: 'more', open: !!S.open.recmore },
-              h('summary', {}, 'くわしく見る（案の中身・誰の意見が効いたか・実装の進め方）'),
+              h('summary', {}, 'くわしく見る（理由の全文・次点との差の内訳・案の中身・実装の進め方）'),
+              h('h3', {}, 'なぜこの案か'),
+              h('div', { class: 'reason' }, paras(rec.reason)),
+              gapView(rec),
               partsView(top),
               feasView(top, true),
               rec.influences && rec.influences.length ? h('div', {}, h('h3', {}, '誰のどの意見が効いたか'), h('ul', { class: 'plain' }, rec.influences.map((i) => h('li', {}, h('b', {}, i.name + '： '), i.point)))) : null,
@@ -3022,7 +3382,7 @@ window.sampleAi = module.exports; })();
           c.why ? h('div', { class: 'hint', style: 'margin-top:6px' }, (c.origin === 'ai' ? 'この案を足した理由：' : '組み合わせの狙い：') + c.why) : null,
           feasView(c, false),
           t && t.marks && t.marks.length
-            ? h('div', { class: 'fit' }, h('b', {}, '評価基準ごとの採点（進行役AI）'), h('div', { class: 'marks' + (t.marks.some((m) => m.note) ? ' rows' : '') }, t.marks.map((m) => h('div', { class: 'mkrow' }, h('span', { class: 'mk s' + m.score }, `${m.name}${m.weight !== 1 ? ' ×' + m.weight : ''}：${m.score}/5`), m.note ? h('span', { class: 'mknote' }, m.note) : null))), t.comment ? h('div', { class: 'hint' }, t.comment) : null)
+            ? h('div', { class: 'fit' }, h('b', {}, '評価基準ごとの採点（進行役AI）'), h('div', { class: 'marks' + (t.marks.some((m) => m.note) ? ' rows' : '') }, t.marks.map((m) => h('div', { class: 'mkrow' }, h('span', { class: 'mk s' + Math.round(m.score) }, `${m.name}${m.weight !== 1 ? ' ×' + m.weight : ''}：${m.score}/5`), m.spread ? h('span', { class: 'mkspread', title: '2回採点した結果に差がありました。平均を使っています' }, `2回の差 ${m.spread}`) : null, m.note ? h('span', { class: 'mknote' }, m.note) : null))), t.comment ? h('div', { class: 'hint' }, t.comment) : null)
             : null,
           evs.length && evs.every((x) => x.ev.basis !== 'stated')
             ? h('div', { class: 'hint guessnote' }, 'この案への支持は、すべて代理人の推測です（本人の意見はまだ入っていません）。承認の前に、自分の考えと合っているか確かめてください。')
@@ -3044,6 +3404,7 @@ window.sampleAi = module.exports; })();
         return -(t.total === undefined ? t.score || 0 : t.total);
       };
       const sorted = cands.slice().sort((a, b) => rank(a) - rank(b));
+      const anyFeas = cands.some((c) => c.feas);
       let no = 0;
       const row = (c) => {
         const t = table[c.id];
@@ -3061,7 +3422,7 @@ window.sampleAi = module.exports; })();
             h('span', { class: 'cno' }, out ? '—' : total === null ? '・' : String(++no)),
             h('span', { class: 'cmain' }, h('span', { class: 'cttl' }, c.title, isTop ? h('span', { class: 'tag push' }, '推薦') : null, c.origin === 'merged' ? h('span', { class: 'tag mix' }, '合体案') : null, c.origin === 'ai' ? h('span', { class: 'tag new' }, 'AIの新案') : null, out ? h('span', { class: 'tag out' }, c.dropped ? '本人が取り下げ' : '対象外') : null), h('span', { class: 'cwho' }, who(c))),
             total === null ? h('span', { class: 'cscore none' }, c.dropped ? '採点しません' : '採点前') : h('span', { class: 'cscore' }, h('span', { class: 'cbar' }, h('i', { style: `width:${Math.max(0, Math.min(100, total))}%` })), h('b', {}, String(total)), h('small', {}, '点')),
-            h('span', { class: 'cfeas' + (c.feas ? ' f-' + c.feas.verdict : '') }, c.feas ? Engine.FEAS_LABEL[c.feas.verdict] || '—' : '—'),
+            anyFeas ? h('span', { class: 'cfeas' + (c.feas ? ' f-' + c.feas.verdict : '') }, c.feas ? Engine.FEAS_LABEL[c.feas.verdict] || '—' : out ? '—' : '未調査') : null,
             h('span', { class: 'cchev' }, '')
           ),
           card(c)
@@ -3076,9 +3437,9 @@ window.sampleAi = module.exports; })();
         fold(
           'cands',
           `すべての案をくらべる（${cands.length}案）`,
-          true,
+          !(rec && st.phase !== 'collecting'),
           h('div', { class: 'csum' }, h('span', {}, `メンバーの案 ${nMember}`), nMerged ? h('span', {}, `＋ 合体案 ${nMerged}`) : null, nAi ? h('span', {}, `＋ AIの新案 ${nAi}`) : null, h('span', { class: 'hint' }, '出された案は1つずつ候補になります。進行役AIが、相性のよい案を組み合わせた合体案と、新しい案を足して、まとめて採点します。')),
-          h('div', { class: 'chead' }, h('span', { class: 'cno' }, '順位'), h('span', { class: 'cmain' }, '案（提案した人）'), h('span', { class: 'cscore' }, '点数（100点満点）'), h('span', { class: 'cfeas plain' }, '実現性'), h('span', { class: 'cchev plain' }, '')),
+          h('div', { class: 'chead' }, h('span', { class: 'cno' }, '順位'), h('span', { class: 'cmain' }, '案（提案した人）'), h('span', { class: 'cscore' }, '点数（100点満点）'), anyFeas ? h('span', { class: 'cfeas plain' }, '実現性') : null, h('span', { class: 'cchev plain' }, '')),
           sorted.map(row),
           h('div', { class: 'hint', style: 'margin-top:10px' }, '行を押すと、案の中身・採点の内訳・各代理人の意見が開きます。100点満点で、お題と評価基準への合い方が70点（進行役AIが基準ごとに5段階で採点）、メンバーの支持が30点（各代理人が5段階。推測による評価は重み半分）です。本人が「嫌」と言った案と、元の案より点が低い合体案は対象外です。評価基準が未設定のときは、支持だけで100点に換算します。')
         )
@@ -3103,8 +3464,9 @@ window.sampleAi = module.exports; })();
         msgs.length
           ? h('div', { class: 'log' }, msgs.map(msgRow))
           : h('div', { class: 'hint' }, 'まだ会議は始まっていません。全員が「① 考えを預ける」で考えを預けると、代理人どうしの会議が始まります。'),
-        st.phase === 'review' || st.phase === 'decided'
+        st.phase === 'review'
           ? h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', disabled: !!S.busy || running, onclick: () => startMeeting('full') }, '最初から会議をやり直す'))
+          : st.phase === 'decided' ? h('div', { class: 'hint' }, '決定したので、預けた本音は共有の保存先から消しました。やり直すときは、幹事が「決定を取り消す」を押してください（各自のアプリから自動で預け直されます）。')
           : null
       )
     );
@@ -3305,8 +3667,9 @@ window.sampleAi = module.exports; })();
         { class: 'hero2' },
         h('div', { class: 'eyebrow' }, '集まる時間が合わないチームへ'),
         h('h2', { class: 'herotitle' }, 'AIの代理人が、あなたのかわりに', h('br', {}), '「どの案にするか」を話し合います'),
-        h('p', { class: 'herolead' }, 'あなたは代理人に考えを話すだけ。会議は代理人どうしで進みます。'),
-        h('p', { class: 'heroterm' }, h('b', {}, '代理人'), '＝あなたの考えを預かり、かわりに会議で話すAI。', h('b', {}, '預ける'), '＝代理人に、自分の案と本音を伝えること。最後に決めるのは人間です（全員の承認で決定）。'),
+        h('p', { class: 'herolead' }, 'あなたは代理人に考えを話すだけ。会議は、あなたが留守の間に、代理人どうしで進みます。'),
+        h('p', { class: 'herofor' }, '集まれるなら、集まって話すのが一番です。これは、集まりたいのに時間が合わないチームのための道具です。全員の考えが、声の大きさに関係なく同じ重さで会議に入ります。'),
+        h('p', { class: 'heroterm' }, h('b', {}, '代理人'), '＝あなたの考えを預かり、MeetForMeで話すAI。', h('b', {}, '預ける'), '＝代理人に、自分の案と本音を伝えること。最後に決めるのは人間です（全員の承認で決定）。'),
         h(
           'div',
           { class: 'stepcards' },
@@ -3344,7 +3707,7 @@ window.sampleAi = module.exports; })();
     const copyInvite = async () => {
       const text = window.WEB
         ? [
-            `【かわりに会議】${r.theme ? '「' + r.theme + '」を決める' : ''}会議に参加してください。`,
+            `【MeetForMe】${r.theme ? '「' + r.theme + '」を決める' : ''}会議に参加してください。`,
             '1. 次のリンクを開きます（スマホ・Mac・Windowsのブラウザで使えます。インストールは不要です）。',
             `   ${joinLink()}`,
             '2. 名前を入れて「参加する」を押します（招待コードは入った状態で開きます）。',
@@ -3353,10 +3716,10 @@ window.sampleAi = module.exports; })();
             '※ このリンクと招待コードはチームの外に渡さないでください。',
           ].join('\n')
         : [
-        `【かわりに会議】${r.theme ? '「' + r.theme + '」を決める' : ''}会議に参加してください。`,
-        '1. 一緒に送るインストーラー（kawarini-kaigi-setup-….exe）を開きます。Windowsのパソコンで使えます。',
+        `【MeetForMe】${r.theme ? '「' + r.theme + '」を決める' : ''}会議に参加してください。`,
+        '1. 一緒に送るインストーラー（rusuban-kaigi-setup-….exe）を開きます。Windowsのパソコンで使えます。',
         '   ※ 初回は青い画面「WindowsによってPCが保護されました」が出ます。まだ署名をしていないためで、「詳細情報」→「実行」で進めます。',
-        '2. 「かわりに会議」を開き、「招待コードで参加する」に名前と下のコードを入れます。',
+        '2. 「MeetForMe」を開き、「招待コードで参加する」に名前と下のコードを入れます。',
         `   招待コード： ${inviteCode()}`,
         '3. 「① 考えを預ける」で、自分の代理人に案と本音を話します（5分ほど）。全員が預けると、代理人どうしの会議が自動で始まります。',
         '※ 招待コードはチームの外に渡さないでください。',
@@ -3461,7 +3824,7 @@ window.sampleAi = module.exports; })();
       });
     const report = async () => {
       const lines = [
-        '【かわりに会議 不具合の報告】',
+        '【MeetForMe 不具合の報告】',
         `版: ${S.cfg.appVersion} ／ 環境: ${S.cfg.platform || ''}`,
         `共有: ${S.cfg.sharedMode} ／ AI: ${S.cfg.hasApiKey ? '自分のAPIキー' : S.cfg.demo ? '見本モード' : S.cfg.serverAi ? 'サーバー経由' : 'なし'} ／ 役割: ${isLeader() ? '幹事' : 'メンバー'}`,
         `会議の状態: ${state().phase || ''}（第${state().round || 0}回）${state().error ? ' ／ 止まった理由: ' + state().error : ''}`,
@@ -3576,6 +3939,20 @@ window.sampleAi = module.exports; })();
         ),
         h('div', { class: 'row end', style: 'margin-top:16px' }, h('button', { class: 'btn', onclick: save }, '保存する'))
       ),
+      h(
+        'div',
+        { class: 'card', id: 'sec-take' },
+        h('h2', {}, '別の端末で続ける'),
+        h('div', { class: 'hint' }, 'PCで始めた代理人との会話を、スマホで続けられます（逆もできます）。リンクを作り、続きをしたい端末のブラウザで開いてください。会話は暗号化して保存され、鍵はリンクの中にだけあります。リンクはあなた専用なので、ほかの人に渡さないでください。'),
+        S.takeLink ? h('div', { class: 'codebox', id: 'takeLink', style: 'margin-top:10px;word-break:break-all' }, S.takeLink) : null,
+        h(
+          'div',
+          { class: 'row end', style: 'margin-top:10px' },
+          S.takeLink ? h('button', { class: 'btn ghost', onclick: async () => { try { await navigator.clipboard.writeText(S.takeLink); S.notice = '引き継ぎリンクをコピーしました。'; } catch (e) { S.notice = 'コピーできませんでした。リンクを長押しして選び、コピーしてください。'; } renderStatus(); } }, 'リンクをコピー') : null,
+          h('button', { class: 'btn' + (S.takeLink ? ' ghost' : ''), disabled: !!S.busy, onclick: async () => { try { S.takeLink = await makeTakeLink(); S.error = ''; } catch (e) { S.error = errText(e); } render(); } }, S.takeLink ? '作り直す' : '引き継ぎリンクを作る')
+        ),
+        S.priv && S.priv.syncKey ? h('div', { class: 'hint', style: 'margin-top:8px' }, 'この会議は、引き継ぎが有効です。会話を進めるたびに、暗号化した内容が保存先に送られます。') : null
+      ),
       leaderCard,
       toolsCard,
       aboutCard,
@@ -3651,17 +4028,37 @@ window.sampleAi = module.exports; })();
   }
 
   // 幹事のアプリ（AIを呼べる）が開いていれば、全員が預けたとき・新しい答えが届いたときに会議を進める
+  // 会議をサーバーで進められるとき（関数「meeting」が入っているとき）は、だれの画面からでも「進めてください」と合図だけ送る。
+  // 画面を閉じても会議は進む。合図から90秒たっても始まらないときだけ、これまでどおり幹事の画面で進める
+  function serverKick() {
+    if (!S.cfg.serverMeeting || !api.kickMeeting || window.PROTO) return false;
+    if (!ready() || S.busy || isRunning()) return true;
+    const st = state();
+    const auto = Engine.autoMode(S.snap, Date.now());
+    if (!auto) return true;
+    const key = [auto.mode, st.round || 0, st.paused || 0, st.lastRunAt || 0, Object.keys(S.snap.brief).sort().join(',')].join(':');
+    if (S.kickKey !== key) {
+      S.kickKey = key;
+      S.kickAt = Date.now();
+      api.kickMeeting().then((r) => { if (!r || r.ok === false) S.kickAt = 0; }).catch(() => { S.kickAt = 0; });
+      return true;
+    }
+    return Date.now() - (S.kickAt || 0) < 90000;
+  }
   function autoRun() {
+    const kickPending = serverKick();
     if (!ready() || S.busy || !canAI() || !isLeader() || isRunning()) return;
     const snap = S.snap;
     const st = state();
     if (st.error) return; // 止まったままのときは自動では繰り返さない（会議室の「続きから再開する」で進める）
     const ids = Object.keys(snap.brief).filter((id) => snap.member[id]).sort();
     let mode = '';
+    if (kickPending) return; // サーバーに任せて待っているところ
     const deadlineAt = roomInfo().deadlineAt || 0;
     const due = !!deadlineAt && Date.now() >= deadlineAt; // 預ける締切を過ぎたら、預けた人だけで始める
     let late = false;
     if (st.phase === 'collecting' && ids.length >= 2 && (ids.length >= S.teamSize || due)) mode = 'full';
+    if (mode === 'full' && st.paused && Engine.canResume(snap)) mode = 'resume'; // サーバーが時間で区切った続き
     else if (st.phase === 'review') {
       const last = st.lastRunAt || 0;
       const pending = ids.some((id) => (snap.brief[id].updates || []).some((u) => u.at > last) && !Object.values(snap.question).some((q) => q.memberId === id && q.status === 'open'));
@@ -3738,6 +4135,16 @@ window.sampleAi = module.exports; })();
     S.cfg = await api.getConfig();
     if (ready()) await enterRoom();
     // Web版: 招待のリンク（…#join=コード）から開いたら、参加の画面を、コードが入った状態で出す
+    // 引き継ぎのリンク（…#take=…）から開いたら、同じ人としてこの端末で続きができるようにする
+    const tm = /[#&]take=([^&]+)/.exec(location.hash || '');
+    if (tm) {
+      try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+      try {
+        await takeOver(decodeURIComponent(tm[1]));
+      } catch (e) {
+        S.error = '引き継ぎに失敗しました。（' + errText(e) + '）';
+      }
+    }
     const jm = window.WEB ? /[#&]join=([^&]+)/.exec(location.hash || '') : null;
     if (jm) {
       S.joinCode = decodeURIComponent(jm[1]);

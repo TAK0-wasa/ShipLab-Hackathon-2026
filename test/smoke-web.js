@@ -72,7 +72,7 @@ app.whenReady().then(async () => {
     })()`);
     await until(async () => (await text('#view')).includes('推薦案（第1回の議論）'), '推薦が出ない', 90000);
     await idle();
-    await need('#view', ['なぜこの案か', 'との差：', 'この案を承認する'], '会議の結果');
+    await need('#view', ['理由：', '点の差', 'くわしく見る', 'この案を承認する'], '会議の結果');
     await shot('w2-result');
 
     // 4. 開き直しても続きから使える（設定と会議はこのブラウザに残る）
@@ -99,6 +99,34 @@ app.whenReady().then(async () => {
     if ((await js(`location.hash`)) !== '') throw new Error('開いたあとも、アドレスに招待コードが残っている');
     await shot('w5-join');
 
+    // 7. 別の端末で続ける: 引き継ぎリンクを作り、別のブラウザ（別人の設定）で開くと、同じ人として会話の続きができる
+    await win.loadFile(path.join(__dirname, '..', 'web', 'index.html'), { query: { db: 'none' } });
+    await sleep(1500);
+    await nav(0); await sleep(400);
+    const myChat = await js(`JSON.stringify([...document.querySelectorAll('#msgs .bubble')].map((b) => b.textContent))`);
+    const myId = await js(`window.api.getConfig().then((c) => c.memberId)`);
+    const myRoom = await js(`window.api.getConfig().then((c) => c.room)`);
+    await click('設定・招待'); await sleep(300);
+    await click('引き継ぎリンクを作る');
+    await until(async () => js(`!!document.querySelector('#takeLink')`), '引き継ぎリンクが出ない', 8000);
+    const link = await text('#takeLink');
+    if (!/#take=[\w-]+$/.test(link)) throw new Error('引き継ぎリンクの形がおかしい: ' + link.slice(0, 80));
+    // 保存先には暗号文だけが置かれ、会話の文字は入っていない
+    const privDoc = JSON.parse(await js(`(async () => JSON.stringify((await api.store.all()).filter((d) => d.kind === 'priv')))()`));
+    if (privDoc.length !== 1 || !privDoc[0].data.ct || JSON.stringify(privDoc).includes('代理人')) throw new Error('引き継ぎ用の保存内容がおかしい: ' + JSON.stringify(privDoc).slice(0, 200));
+    await win.loadFile(path.join(__dirname, '..', 'web', 'index.html'), { query: { db: 'none', profile: 'c' }, hash: link.split('#')[1] });
+    await sleep(2000);
+    await need('#who', ['りょうま'], '引き継いだあとのヘッダー');
+    if ((await js(`window.api.getConfig().then((c) => c.memberId)`)) !== myId) throw new Error('引き継いでも同じ人になっていない');
+    if ((await js(`location.hash`)) !== '') throw new Error('引き継いだあとも、アドレスに鍵が残っている');
+    // この確認では見本のAIを使う（元のブラウザと同じ設定にする）ので、設定してから開き直す
+    await js(`window.api.saveConfig({ demo: true }).then(() => true)`);
+    await win.loadFile(path.join(__dirname, '..', 'web', 'index.html'), { query: { db: 'none', profile: 'c' } });
+    await sleep(1500);
+    await nav(0); await sleep(400);
+    const takenChat = await js(`JSON.stringify([...document.querySelectorAll('#msgs .bubble')].map((b) => b.textContent))`);
+    if (takenChat !== myChat) throw new Error('会話が引き継がれていない: ' + takenChat.slice(0, 200) + ' ≠ ' + myChat.slice(0, 200));
+    await shot('w6-takeover');
     if (errors.length) throw new Error('コンソールエラー: ' + errors.join(' / '));
     console.log('WEB SMOKE OK', outDir);
     app.exit(0);

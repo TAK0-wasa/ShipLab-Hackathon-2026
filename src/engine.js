@@ -1,4 +1,4 @@
-// かわりに会議 — 会議エンジン（画面からも Node のテストからも使える）
+// MeetForMe — 会議エンジン（画面からも Node のテストからも使える）
 // 重要な設計: 各エージェントの呼び出しには「その担当者の考え」と「公開された会議ログ」しか渡さない。
 // 進行役（合体案づくり・推薦理由の説明）には公開情報しか渡さない。
 (function (root, factory) {
@@ -20,13 +20,22 @@
     if (ev.score >= 1 && ev.score <= 5) return ev.score;
     return ev.rating === 'like' ? 4 : ev.rating === 'no' ? 1 : 3;
   }
+  // 2回の採点の平均は 3.5 のような半点になるので、0.5刻みで受け取る
+  const clampHalf = (v) => {
+    const n = Math.round(Number(v) * 2) / 2;
+    return n >= 1 && n <= 5 ? n : 3;
+  };
   const MAX_MUST = 3;
   const INTERVIEW_ITEMS = ['案', '好きな点・不安', '外したくない条件', '実装でできること'];
   // 代理人の返答の末尾にある <<済:1,2>> を取り出し、表示用の文章と分ける
   function splitCovered(text) {
-    const m = /<<済[:：]([\d,、\s]*)>>/.exec(text || '');
+    const t = text || '';
+    const m = /<<済[:：]([\d,、\s]*)>>/.exec(t);
     const covered = m ? [...new Set((m[1].match(/\d/g) || []).map(Number).filter((n) => n >= 1 && n <= INTERVIEW_ITEMS.length))] : null;
-    return { text: (text || '').replace(/<<済[:：][^>]*>>/g, '').trim(), covered };
+    // <<選:A|B|C>> は、本人が押して答えられる選択肢（最大4つ、1つ30字まで）
+    const c = /<<選[:：]([^>]*)>>/.exec(t);
+    const choices = c ? [...new Set(c[1].split(/[|｜]/).map((x) => x.trim()).filter((x) => x && x.length <= 30))].slice(0, 4) : [];
+    return { text: t.replace(/<<[済選][:：][^>]*>>/g, '').trim(), covered, choices };
   }
 
   const now = () => Date.now();
@@ -62,6 +71,22 @@
     return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
   }
 
+  // AIの文章の後始末。画面に出す前に、内部用の印を取り除く
+  // ・Web検索の引用の印（<cite index="…">…</cite>）を外す（中の文は残す）
+  const stripCite = (text) => String(text == null ? '' : text).replace(/<\/?cite\b[^>]*>/g, '');
+  // ・案の内部の番号（mix1-2 など）を、案の名前に置き換える。AIには番号を渡しているので、文章に番号のまま書いてくることがある
+  function cleanText(text, cand) {
+    let t = stripCite(text);
+    const ids = Object.keys(cand || {}).filter((id) => cand[id] && cand[id].title).sort((a, b) => b.length - a.length);
+    for (const id of ids) {
+      if (!t.includes(id)) continue;
+      const e = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const name = '「' + cand[id].title + '」';
+      t = t.replace(new RegExp('「\\s*' + e + '\\s*」', 'g'), name).replace(new RegExp('(^|[^A-Za-z0-9_-])' + e + '(?![A-Za-z0-9_-])', 'g'), '$1' + name);
+    }
+    return t;
+  }
+
   async function askJson(llm, system, user, maxTokens, onPartial, extra) {
     let lastErr;
     for (let i = 0; i < 3; i++) {
@@ -71,7 +96,8 @@
       if (extra) Object.assign(req, extra);
       if (onPartial) req.onText = (t) => { try { onPartial(partialStatement(t)); } catch (e) {} };
       const raw = await llm(req);
-      const [text, src] = String(raw || '').split('§SRC§');
+      const [text0, src] = String(raw || '').split('§SRC§');
+      const text = stripCite(text0); // Web検索の引用の印（<cite …>）が文章に混ざるので外す
       try {
         const out = parseJson(text);
         if (src) out.__sources = src.split(/\s+/).filter((u) => /^https?:\/\//.test(u)).slice(0, 8);
@@ -176,6 +202,7 @@
       '- 本人が言っていないことを決めつけない。評価や説教はしない。',
       '- 外したくない条件は最大' + MAX_MUST + 'つまで。多いときは優先順位を聞く。',
       '- 4項目が聞けたら、それ以上質問を足さず、「『預ける内容を確認する』ボタンを押してください」と案内する。本人が途中で預けたいと言ったら止めない（足りない所は推測として扱われる）。それ以降は本人が「やっぱりこう思う」と言ってきたら受け止める。',
+      '- 質問をしたときは、その質問への答えの候補を2〜4個、<<選:候補1|候補2|候補3>> の形で1行に書く。本人はこれをボタンとして押すだけで答えられる。候補は本人の言葉としてそのまま送られるので、「締切までに確実に動くこと」「特になし」のように、短い答えの形（1つ30字まで）で、その案とお題に合わせて具体的に書く。案そのものを聞く質問など、候補を出せないときはこの行を書かない。この行も本人には文章としては表示されない。',
       '- 返答の一番最後の行に、必ず <<済:1,2>> の形で、ここまでに本人から聞けた項目の番号だけを書く（1=案 2=好きな点と不安な点 3=外したくない条件 4=実装でできること）。まだ何も聞けていなければ <<済:>> と書く。この行は本人には表示されない。',
       '',
       context || '',
@@ -375,7 +402,7 @@
       }
       const supportRate = wsum ? ssum / wsum / 5 : 0.6;
       const j = (judge || {})[c.id] || {};
-      const marks = crits.map((k, i) => ({ name: k.name, weight: k.weight, score: clamp5(j.marks && j.marks[i]), note: str(j.notes && j.notes[i]) }));
+      const marks = crits.map((k, i) => ({ name: k.name, weight: k.weight, score: clampHalf(j.marks && j.marks[i]), note: str(j.notes && j.notes[i]), spread: Number(j.spread && j.spread[i]) || 0 }));
       const cw = marks.reduce((t, m) => t + m.weight, 0);
       const crit = marks.length && cw ? r1((marks.reduce((t, m) => t + m.weight * m.score, 0) / cw / 5) * RATIO.crit) : null;
       const support = r1(supportRate * (crit === null ? 100 : RATIO.support));
@@ -430,7 +457,36 @@
   }
 
   // 進行役AIが、各案を評価基準ごとに5段階で採点する（公開情報だけを見る）
+  // 採点のぶれを減らす: 同じ採点を2回行い、基準ごとに平均を取る。2回の差（spread）も残して画面に出す
+  function mergeJudges(a, b, n) {
+    if (!b) return a;
+    const out = {};
+    for (const id of Object.keys(a)) {
+      const x = a[id];
+      const y = b[id];
+      if (!y) {
+        out[id] = x;
+        continue;
+      }
+      out[id] = {
+        marks: x.marks.map((m, i) => (m + y.marks[i]) / 2),
+        spread: x.marks.map((m, i) => Math.abs(m - y.marks[i])),
+        notes: x.notes,
+        comment: x.comment,
+      };
+    }
+    out.__twice = true;
+    return out;
+  }
   async function facilitatorJudge(ctx, env, criteria) {
+    // 2回目は画面に流さず、失敗しても1回目だけで進める（会議を止めない）
+    const [first, second] = await Promise.all([
+      judgeOnce(ctx, env, criteria, true),
+      judgeOnce(ctx, env, criteria, false).catch(() => null),
+    ]);
+    return { judge: mergeJudges(first, second, criteria.length), passes: second ? [first, second] : [first] };
+  }
+  async function judgeOnce(ctx, env, criteria, live) {
     const cands = activeCands(env.snap);
     const system = [
       'あなたは会議の中立な進行役であり、審査員の目線で案を採点します。特定のメンバーの味方はしません。あなたが知っているのは公開された内容だけです。',
@@ -466,7 +522,7 @@
     ].join('\n');
     let judge = {};
     for (let attempt = 0; attempt < 2; attempt++) {
-      const out = await askJson(ctx.llm, system, user, 8000, (text) => ctx.onLive && ctx.onLive({ speakerName: '進行役AI', text }));
+      const out = await askJson(ctx.llm, system, user, 8000, live ? (text) => ctx.onLive && ctx.onLive({ speakerName: '進行役AI', text }) : null);
       judge = {};
       for (const x of Array.isArray(out.scores) ? out.scores : []) {
         if (!x || !env.snap.cand[x.candId] || !Array.isArray(x.marks) || x.marks.length < criteria.length) continue;
@@ -480,6 +536,7 @@
   async function postMsg(ctx, env, m) {
     const id = uid('g');
     const data = { round: env.round, at: now(), ...m };
+    if (data.text) data.text = cleanText(data.text, env.snap.cand);
     await ctx.store.put('msg', id, data);
     env.snap.msg[id] = data;
     if (ctx.onLive) ctx.onLive(null);
@@ -613,6 +670,28 @@
 
   // 進行役AIが、各案が技術的に作れるかを調べ、締切までに作れる範囲を説明する
   // （デスクトップ版でAPIキーがあるときは、Web検索で必要なAPIやライブラリを確かめる）
+  // 実現性の結果を、会議に出ている案に結び付ける。番号の書き方がずれていても拾う
+  function feasItems(out, snap) {
+    let list = out && out.items;
+    if (list && !Array.isArray(list) && typeof list === 'object') list = Object.entries(list).map(([k, v]) => ({ candId: k, ...(v || {}) }));
+    const norm = (v) => str(v).replace(/[\[\]［］【】「」\s]/g, '').toLowerCase();
+    const ids = Object.keys(snap.cand).filter((id) => !snap.cand[id].dropped);
+    const res = [];
+    const seen = new Set();
+    for (const x of Array.isArray(list) ? list : []) {
+      if (!x || typeof x !== 'object') continue;
+      const key = norm(x.candId || x.id || x.cand || x.candidateId);
+      const ttl = norm(x.title || x.name);
+      let id = ids.find((i) => norm(i) === key);
+      if (!id && key) id = ids.find((i) => norm(snap.cand[i].title) === key);
+      if (!id && ttl) id = ids.find((i) => norm(snap.cand[i].title) === ttl);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      res.push({ ...x, candId: id });
+    }
+    return res;
+  }
+
   async function facilitatorFeasibility(ctx, env) {
     const cands = activeCands(env.snap);
     const system = [
@@ -655,9 +734,20 @@
       return;
     }
     const sources = out.__sources || [];
-    for (const x of Array.isArray(out.items) ? out.items : []) {
-      const c = x && env.snap.cand[x.candId];
-      if (!c || c.dropped) continue;
+    // AIが案の番号を [xxx] のように括弧付きで返したり、題名で返したりしても、対応する案を見つける
+    let items = feasItems(out, env.snap);
+    if (!items.length) {
+      // 1件も案に結び付かなかったときは、検索なしでもう一度だけ聞く（列が空のまま残るのを防ぐ）
+      try {
+        const again = await askJson(ctx.llm, system, user + '\n\n※ candId には、上の【会議に出ている案】の [ ] の中の文字列を、括弧なしでそのまま入れてください。', 8000, null, {});
+        items = feasItems(again, env.snap);
+        if (!str(out.statement)) out.statement = again.statement;
+      } catch (e) {
+        if (!e.unreadable) throw e;
+      }
+    }
+    for (const x of items) {
+      const c = env.snap.cand[x.candId];
       const data = { ...c, feas: { verdict: FEAS_LABEL[x.verdict] ? x.verdict : 'partial', needs: str(x.needs), mvp: str(x.mvp), later: str(x.later), risk: str(x.risk), searched: sources.length > 0, sources } };
       await ctx.store.put('cand', x.candId, data);
       env.snap.cand[x.candId] = data;
@@ -715,14 +805,15 @@
       out = { reason: '（理由の説明を作れませんでした。点数の内訳をご覧ください。）' };
     }
     const plan = out.plan && typeof out.plan === 'object' ? out.plan : {};
+    const tidy = (x) => cleanText(str(x), env.snap.cand);
     return {
       plan: {
-        steps: str(plan.steps),
-        roles: (Array.isArray(plan.roles) ? plan.roles : []).map((r) => ({ name: str(r.name), role: str(r.role) })).filter((r) => r.name && r.role),
+        steps: tidy(plan.steps),
+        roles: (Array.isArray(plan.roles) ? plan.roles : []).map((r) => ({ name: str(r.name), role: tidy(r.role) })).filter((r) => r.name && r.role),
       },
-      reason: str(out.reason),
-      influences: (Array.isArray(out.influences) ? out.influences : []).map((i) => ({ name: str(i.name), point: str(i.point) })).filter((i) => i.name && i.point),
-      conflict: str(out.conflict),
+      reason: tidy(out.reason),
+      influences: (Array.isArray(out.influences) ? out.influences : []).map((i) => ({ name: str(i.name), point: tidy(i.point) })).filter((i) => i.name && i.point),
+      conflict: tidy(out.conflict),
     };
   }
 
@@ -752,6 +843,9 @@
     }
     const participants = Object.keys(snap.brief).filter((id) => snap.member[id]);
     if (participants.length < 2) throw new Error('考えを預けたメンバーが2人以上そろうと会議を始められます。');
+    // 決定のあとは、共有の保存先から本音（好きな点・不安・条件など）を消している。やり直すには、各自のアプリから預け直されている必要がある
+    const gone = participants.filter((id) => snap.brief[id].scrubbed);
+    if (gone.length) throw new Error(`決定のあと、共有の保存先から本音を消しました。${gone.map((id) => (snap.member[id] || {}).name || '?').join('・')}さんがアプリを開くと自動で預け直されるので、そのあとでやり直してください。`);
     const full = (opts && opts.mode) === 'full' || !Object.keys(snap.cand).length || st.phase === 'collecting';
     // 途中で止まった会議の「続きから」: 前回の進み具合（st.ck）が残っていて、参加者が同じなら、済んだ段階を飛ばす
     const ck0 = st.ck;
@@ -763,6 +857,12 @@
     ctx = {
       ...ctx,
       llm: async (req) => {
+        // サーバーで進めるときは、1回の実行に使える時間が限られる。時間が来たら、次のAI呼び出しの前で区切り、続きは次の実行に任せる
+        if (ctx0.stopAt && now() > ctx0.stopAt) {
+          const e = new Error('時間の区切りで一度止めました。続きから再開します。');
+          e.pause = true;
+          throw e;
+        }
         const t0 = now();
         // 一時的な失敗（通信の途切れ・混雑）は、少し待って自動でやり直す。設定の誤りや回数の上限は、やり直しても直らないのですぐ止める
         let out;
@@ -787,7 +887,7 @@
         return out;
       },
     };
-    await setState(ctx, env, { runner: me.id, runnerName: me.name, phase: 'meeting', error: '', runStartedAt: now() });
+    await setState(ctx, env, { runner: me.id, runnerName: me.name, phase: 'meeting', error: '', paused: 0, runStartedAt: resume && st.runStartedAt ? st.runStartedAt : now() });
     // 同時に2人が始めた場合に備えて、少し待ってから自分が進行役になれたか確かめる
     await sleep(ctx.lockWait === undefined ? 1200 : ctx.lockWait);
     const check = (await snapshot(store)).state.main || {};
@@ -806,7 +906,8 @@
       if (full && resume) {
         env.wantParts = ck.wantParts.slice();
         await progress('止まったところから会議を再開しています', env.state.stage || 'round1', '');
-        await postMsg(ctx, env, { speaker: 'system', speakerName: 'システム', type: 'system', text: '止まったところから、会議を再開します' });
+        // 時間の区切りからの続き（サーバーで進めるとき）は、止まったわけではないのでログには書かない
+        if (!st.paused) await postMsg(ctx, env, { speaker: 'system', speakerName: 'システム', type: 'system', text: '止まったところから、会議を再開します' });
       }
       if (full) {
         if (!resume) {
@@ -911,12 +1012,22 @@
       await progress('進行役AIが推薦案をまとめています', 'explain', '進行役AI');
       const criteria = parseCriteria(snap);
       let judge = {};
+      let passes = [];
       if (criteria.length) {
         await progress('進行役AIが評価基準に沿って採点しています', 'explain', '進行役AI');
-        judge = await facilitatorJudge(ctx, env, criteria);
+        const jr = await facilitatorJudge(ctx, env, criteria);
+        judge = jr.judge;
+        passes = jr.passes;
         await progress('進行役AIが推薦案をまとめています', 'explain', '進行役AI');
       }
       const rec = recommend(activeCands(snap), snap.eval, participants, judge, criteria);
+      // 2回の採点のどちらか片方だけで決めると1位が変わる場合は、点差があっても「僅差」として扱い、全員に聞き直す
+      rec.judgedTimes = passes.length;
+      if (passes.length > 1) {
+        const tops = passes.map((p) => recommend(activeCands(snap), snap.eval, participants, p, criteria).topId);
+        rec.unstable = tops.some((t) => t !== rec.topId);
+        if (rec.unstable && rec.runnerUpId) rec.tie = true;
+      }
 
       // 上位の案に、代理人の推測で低い評価が付いているときは、本人に確かめる（推測のままでは案を落とさない）
       const upper = rec.table.filter((t) => !t.excluded).sort((x, y) => y.total - x.total).slice(0, 3);
@@ -968,12 +1079,46 @@
       notify('');
       return recommendation;
     } catch (e) {
+      if (e && e.pause) {
+        // 失敗ではなく、時間の区切り。進み具合（ck）を残したまま進行役を空け、次の実行が続きから進める
+        try {
+          await setState(ctx, env, { runner: null, runnerName: '', phase: 'collecting', error: '', paused: now(), progress: '続きを準備しています' });
+        } catch {}
+        notify('');
+        return { paused: true };
+      }
       try {
-        await setState(ctx, env, { runner: null, runnerName: '', phase: Object.keys(env.snap.cand).length && env.state.recommendation ? 'review' : 'collecting', error: String((e && e.message) || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), failedAt: now(), progress: '', stage: '', speaker: '' });
+        await setState(ctx, env, { runner: null, runnerName: '', paused: 0, phase: Object.keys(env.snap.cand).length && env.state.recommendation ? 'review' : 'collecting', error: String((e && e.message) || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), failedAt: now(), progress: '', stage: '', speaker: '' });
       } catch {}
       notify('');
       throw e;
     }
+  }
+
+  // いま会議を自動で進めるべきか、進めるならどの形か（サーバーで会議を進めるときに使う。画面側の自動開始と同じ決まり）
+  function autoMode(snap, t) {
+    const st = snap.state.main || { phase: 'collecting', round: 0 };
+    const room = (snap.room && snap.room.main) || {};
+    if (!snap.room || !snap.room.main) return null;
+    if (st.error) return null; // 止まったままのときは、自動では繰り返さない
+    if (st.runner && t - (st.runnerAt || 0) < LOCK_MS) return null; // だれかが進めている
+    const ids = Object.keys(snap.brief).filter((id) => snap.member[id]).sort();
+    if (ids.length < 2 || ids.some((id) => snap.brief[id].scrubbed)) return null;
+    if (st.paused && canResume(snap)) return { mode: 'resume' };
+    const size = Number(room.teamSize) || 0;
+    const due = !!room.deadlineAt && t >= room.deadlineAt;
+    if (st.phase === 'collecting' || !st.phase) {
+      if ((size && ids.length >= size) || due) return { mode: canResume(snap) && st.paused ? 'resume' : 'full' };
+      return null;
+    }
+    if (st.phase === 'review') {
+      const last = st.lastRunAt || 0;
+      if ((st.participants || []).length && ids.some((id) => !st.participants.includes(id))) return { mode: 'full', late: true };
+      if (ids.some((id) => (snap.brief[id].editedAt || 0) > last)) return { mode: 'full' };
+      const pending = ids.some((id) => (snap.brief[id].updates || []).some((u) => u.at > last) && !Object.values(snap.question).some((q) => q.memberId === id && q.status === 'open'));
+      if (pending) return { mode: 'rerun' };
+    }
+    return null;
   }
 
   // 本人が自分のエージェントに追加で伝える（確認質問への答え・一言コメント・「やっぱりこう思う」）
@@ -981,6 +1126,7 @@
     const snap = await snapshot(ctx.store);
     const brief = snap.brief[ctx.me.id];
     if (!brief) throw new Error('まだ考えを預けていません。');
+    if (brief.scrubbed) throw new Error('預けた内容を戻しているところです。数秒待ってから、もう一度お試しください。');
     const updates = (brief.updates || []).concat([{ at: now(), text: str(text), q: q || '' }]);
     await ctx.store.put('brief', ctx.me.id, { ...brief, updates });
   }
@@ -996,6 +1142,22 @@
   }
 
   // 承認。全員が今の回の推薦を承認したら決定になる
+  // 決定したら、共有の保存先に残っている本音（好きな点・不安な点・外したくない条件・実装でできること・追加で伝えたこと）と、
+  // 代理人からの確認のやり取りを消す。案そのもの（題名・概要など、会議で公開された部分）だけを残す
+  const PRIVATE_KEYS = ['likes', 'worries', 'mustHaves', 'wantFromOthers', 'acceptCondition', 'impl', 'updates'];
+  async function scrubPrivate(store, snap) {
+    let n = 0;
+    for (const id of Object.keys(snap.brief)) {
+      const b = snap.brief[id];
+      if (!b || b.scrubbed) continue;
+      await store.put('brief', id, { ideas: b.ideas || [], scrubbed: true, scrubbedAt: now() });
+      n++;
+    }
+    for (const qid of Object.keys(snap.question || {})) {
+      if (store.del) await store.del('question', qid);
+    }
+    return n;
+  }
   async function approve(ctx) {
     const snap = await snapshot(ctx.store);
     const st = snap.state.main;
@@ -1008,6 +1170,7 @@
     if (all && st2.phase === 'review' && !st2.runner) {
       const cand = after.cand[st2.recommendation.topId];
       await ctx.store.put('state', 'main', { ...st2, phase: 'decided', decidedAt: now(), decidedCandId: st2.recommendation.topId });
+      await scrubPrivate(ctx.store, after);
       await ctx.store.put('msg', uid('g'), {
         round: st2.round,
         at: now(),
@@ -1041,9 +1204,14 @@
     parseCriteria,
     MAX_MUST,
     INTERVIEW_ITEMS,
+    scrubPrivate,
+    PRIVATE_KEYS,
+    mergeJudges,
+    feasItems,
     splitCovered,
     parseJson,
     paragraphs,
+    cleanText,
     snapshot,
     sortedMsgs,
     activeCands,
@@ -1057,6 +1225,7 @@
     recommend,
     compareTop,
     canResume,
+    autoMode,
     runMeeting,
     addUpdate,
     answerQuestion,

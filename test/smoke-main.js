@@ -33,7 +33,7 @@ global.__mockLlm = async ({ system, messages }) => {
   const who = (system.match(/あなたは(.+?)さんの代理人/) || [])[1];
   const section = user.split('【会議に出ている案】')[1] || user.split('【案の内容】')[1] || '';
   const ids = [...section.split('【')[0].matchAll(/^\[([\w-]+)\]/gm)].map((x) => x[1]);
-  if (!task) return 'ありがとうございます。その案の一番好きなところと、不安なところを教えてください。\n<<済:1>>';
+  if (!task) return 'ありがとうございます。その案の一番好きなところと、不安なところを教えてください。\n<<選:すぐ伝わるのが好き。新しさは不安|特になし>>\n<<済:1>>';
   if (task === 'brief') {
     return JSON.stringify({
       ideas: [{ title: 'AI代理人会議', summary: '集まらなくても案が決まるアプリ。', target: { text: '予定が合わない少人数チーム', by: 'me' }, problem: { text: '最終決定だけ全員そろわないと進まない', by: 'me' }, feature: { text: '代理人AIどうしが議論して合体案を作る', by: 'ai' }, push: 'push' }],
@@ -72,6 +72,15 @@ app.whenReady().then(async () => {
   try {
     await type('#chatInput', 'みんなが集まれなくても案が決まるアプリを作りたい');
     await click('送信'); await idle();
+    // 代理人の質問に、押すだけで答えられる選択肢が出る。押すと、その言葉が自分の発言として送られる
+    {
+      const chips = JSON.parse(await js(`JSON.stringify([...document.querySelectorAll('#quick .chip')].map((b) => b.textContent))`));
+      if (chips.length !== 2 || chips[0] !== 'すぐ伝わるのが好き。新しさは不安') throw new Error('選択肢のボタンが出ない: ' + JSON.stringify(chips));
+      if (await js(`[...document.querySelectorAll('.bubble.assistant')].some((b) => b.textContent.includes('<<'))`)) throw new Error('選択肢の印が文章に出ている');
+      await js(`document.querySelector('#quick .chip').click()`); await idle();
+      const mine = JSON.parse(await js(`JSON.stringify([...document.querySelectorAll('.bubble.user')].map((b) => b.textContent))`));
+      if (mine[mine.length - 1] !== 'すぐ伝わるのが好き。新しさは不安') throw new Error('選択肢を押しても送られない: ' + JSON.stringify(mine));
+    }
     const chatText = await js(`document.querySelector('.chat').innerText`);
     const todoText = await js(`document.querySelector('.todo').innerText`);
     const okN = await js(`document.querySelectorAll('.todo .checks li.ok').length`);

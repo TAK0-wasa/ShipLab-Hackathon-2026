@@ -129,6 +129,19 @@ app.whenReady().then(async () => {
     await click('決定を取り消して、話し合いに戻す'); await sleep(200);
     await click('本当に取り消す'); await idle(); await sleep(500);
     if ((await phase()) !== 'review') throw new Error('決定を取り消しても、承認待ちに戻らない');
+    // 決定すると共有の保存先から本音が消える。取り消すと、自分の分はこの端末から自動で預け直される
+    {
+      const b = JSON.parse(await js(`(async () => JSON.stringify((await api.store.all()).filter((d) => d.kind === 'brief').map((d) => [d.id, !!d.data.scrubbed, d.data.likes || ''])))()`));
+      const mine = b.find((x) => !/^m-/.test(x[0]));
+      if (!mine || mine[1] || !mine[2]) throw new Error('決定を取り消しても、自分の預かりメモが戻っていない: ' + JSON.stringify(b));
+      if (!b.filter((x) => /^m-/.test(x[0])).every((x) => x[1] && !x[2])) throw new Error('決定後に、ほかの人の本音が保存先に残っている: ' + JSON.stringify(b));
+    }
+    // ほかの2人は、それぞれのアプリを開いたときに預け直される（ここでは同じ内容を入れ直して再現する）
+    await js(`(async () => {
+      const mk = (title, feature) => ({ ideas: [{ title, summary: title + 'の説明', target: { text: '学生', by: 'me' }, problem: { text: '', by: 'ai' }, feature: { text: feature, by: 'me' }, push: 'normal' }], likes: 'すぐ伝わる', worries: '新しさが弱い', mustHaves: ['実際に動くこと'], wantFromOthers: '', acceptCondition: '', impl: '', updates: [] });
+      await api.store.put('brief', 'm-aoi', mk('講義メモ自動停止', '入力中は動画を止める'));
+      await api.store.put('brief', 'm-kenta', mk('レシート割り勘', 'レシート撮影で各自の金額'));
+    })()`);
     await need('#view', ['承認 0 / 3 人', 'この案を承認する'], '取り消したあとの承認の欄');
     await shot('t4-reopened');
 

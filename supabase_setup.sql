@@ -1,4 +1,4 @@
--- かわりに会議: 共有データベースの準備（Supabase の SQL Editor に貼り付けて1回だけ実行）
+-- MeetForMe: 共有データベースの準備（Supabase の SQL Editor に貼り付けて1回だけ実行）
 create table if not exists public.docs (
   room text not null,
   kind text not null,
