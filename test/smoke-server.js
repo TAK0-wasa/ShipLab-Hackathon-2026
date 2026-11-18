@@ -9,7 +9,6 @@ const os = require('os');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adk-srv-'));
 app.setPath('appData', tmp);
 app.setPath('userData', path.join(tmp, 'user'));
-process.env.KAWARINI_KEY_FILE = path.join(tmp, 'none.json');
 
 const rows = new Map();
 const calls = [];

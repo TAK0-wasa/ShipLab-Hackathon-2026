@@ -49,15 +49,6 @@ function loadConfig() {
     }
   }
   delete cfg.apiKeyEnc;
-  // このPCで入力したキーが無ければ、アプリに同梱されたキー（api-key.local.json）を使う
-  cfg.keyBundled = false;
-  if (!cfg.apiKey) {
-    const b = bundledKey();
-    if (b) {
-      cfg.apiKey = b;
-      cfg.keyBundled = true;
-    }
-  }
   cfg.rooms = Array.isArray(raw.rooms) ? raw.rooms.filter((r) => r && r.room) : [];
   // 以前の版（会議は1つだけ）の設定を引き継ぐ
   if (cfg.room && !cfg.rooms.some((r) => r.room === cfg.room)) {
@@ -69,7 +60,9 @@ function saveConfig(patch) {
   const cur = loadConfig();
   const { removeRoom, roomTitle, ...rest } = patch || {};
   const next = { ...cur, ...rest };
-  if (!rest.apiKey) next.apiKey = cur.keyBundled ? '' : cur.apiKey || ''; // 空欄なら今のキーを保持（同梱のキーは設定には写さない）
+  if (rest.clearApiKey) next.apiKey = ''; // 保存してあるキーを消す
+  else if (!rest.apiKey) next.apiKey = cur.apiKey || ''; // 空欄なら今のキーを保持
+  delete next.clearApiKey;
   if (!next.memberId) next.memberId = 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   let rooms = cur.rooms.slice();
   if (removeRoom) {
@@ -92,20 +85,12 @@ function saveConfig(patch) {
   }
   next.rooms = rooms;
   const out = { ...next };
-  delete out.keyBundled;
   if (out.apiKey && safeStorage.isEncryptionAvailable()) {
     out.apiKeyEnc = safeStorage.encryptString(out.apiKey).toString('base64');
     delete out.apiKey;
   }
   writeJson(userFile('config.json'), out);
   return publicConfig(loadConfig());
-}
-// 配布用: このフォルダに api-key.local.json（{"apiKey":"sk-ant-…"}）があれば、APIキーを入力していないPCでもそのキーでAIを動かす。
-// キーはそのまま読める形でフォルダに入るので、渡す相手はチーム内に限り、公開する場所（GitHubなど）には置かない
-function bundledKey() {
-  const d = readJson(process.env.KAWARINI_KEY_FILE || localFile('api-key.local.json'), null);
-  const k = d && typeof d.apiKey === 'string' ? d.apiKey.trim() : '';
-  return k.startsWith('sk-') ? k : '';
 }
 // 幹事用: このフォルダに shared-db.local.json（{"url":"…","key":"…"}）があれば、
 // 「会議を作る」の共有データベース欄にあらかじめ入れておく（メンバーは招待コードで受け取るので不要）
@@ -167,7 +152,6 @@ function publicConfig(cfg) {
     ...rest,
     rooms: (rooms || []).map((r) => ({ room: r.room, title: r.title || '' })),
     hasApiKey: !!apiKey,
-    keyBundled: !!cfg.keyBundled,
     serverAi: serverKnown(cfg),
     dbDefault: dbDefault(),
     demo: !!cfg.demo,

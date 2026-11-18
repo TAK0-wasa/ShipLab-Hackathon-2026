@@ -23,6 +23,7 @@ app.whenReady().then(async () => {
   const js = (code) => wc.executeJavaScript(code);
   const click = (text) => js(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith(${JSON.stringify(text)}) && !b.disabled); if (!b) throw new Error('ボタンなし: ' + ${JSON.stringify(text)}); b.click(); })()`);
   const type = (sel, text) => js(`(() => { const t = document.querySelector(${JSON.stringify(sel)}); if (!t) throw new Error('入力欄なし: ' + ${JSON.stringify(sel)}); t.value = ${JSON.stringify(text)}; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  const nav = (i) => js(`(() => { const b = document.querySelectorAll('#nav button')[${i}]; if (!b || b.disabled) throw new Error('上部のボタンなし: ' + ${i}); b.click(); })()`);
   const text = (sel) => js(`(document.querySelector(${JSON.stringify(sel)}) || {}).innerText || ''`);
   const until = async (fn, label, ms) => { for (let i = 0; i < (ms || 60000) / 300; i++) { if (await fn()) return; await sleep(300); } throw new Error(`[${ROLE}] 待っても変わらない: ${label}`); };
   const idle = () => until(async () => !(await js(`!!document.querySelector('#status .spin') || [...document.querySelectorAll('.bubble')].some(b => b.textContent === '…')`)), '処理中のまま');
@@ -36,19 +37,19 @@ app.whenReady().then(async () => {
       await type('#c-criteria', '全員が無理なく担当できるか\n発表がうまくいくか ×2');
       await type('#c-size', '2');
       if (await js(`document.querySelector('#c-more').open`)) throw new Error('接続先の欄が最初から開いている');
-      await js(`document.querySelector('#c-demo').checked = true`);
+      await js(`window.api.saveConfig({ demo: true })`);
       await click('会議を作る'); await sleep(1500);
       const who = await text('#who');
       if (!who.includes('共有中')) throw new Error('共有中にならない: ' + who + ' / ' + (await text('#status')));
       const code = await js(`document.querySelector('#s-invite').value`);
       if (!/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(code)) throw new Error('招待コードが8文字になっていない: ' + code);
       fs.writeFileSync(path.join(DIR, 'code.txt'), code);
-      await click('個室'); await sleep(300);
+      await nav(0); await sleep(300);
       for (const msg of ['自分は話す役をやりたい', '人前で話すのは好き。質問に答えるのは不安。', 'なし', 'スライドも作れる。今夜2時間使える']) { await type('#chatInput', msg); await click('送信'); await idle(); }
-      await click('預ける'); await idle();
+      await click('預ける内容を確認する'); await idle();
       await click('この内容で預ける'); await idle();
       // メンバーが別のPCから預けるのを待つ → 幹事のアプリが自動で会議を進める
-      await until(async () => { await click('会議室').catch(() => {}); return (await text('#view')).includes('推薦案（第1回の議論）'); }, 'メンバーが預けたあと会議が進まない', 120000);
+      await until(async () => { await nav(1).catch(() => {}); return (await text('#view')).includes('推薦案（第1回の議論）'); }, 'メンバーが預けたあと会議が進まない', 120000);
       await idle();
       if (!(await text('#view')).includes('あおい')) throw new Error('メンバーの名前が幹事側に出ていない');
       await shot('meeting');
@@ -68,14 +69,14 @@ app.whenReady().then(async () => {
       if (!(await text('#switch')).includes('発表の役割分担') || !who.includes('あおい（メンバー）') || !who.includes('共有中')) throw new Error('参加後の表示がおかしい: ' + who + ' / ' + (await text('#status')));
       const topic = await js(`(async () => { document.querySelectorAll('nav button')[1].click(); await new Promise(r => setTimeout(r, 400)); document.querySelectorAll('details').forEach((d) => (d.open = true)); await new Promise(r => setTimeout(r, 200)); return document.querySelector('#view').innerText; })()`);
       if (!topic.includes('発表がうまくいくか ×2') || !topic.includes('幹事が設定します')) throw new Error('幹事が入れた評価基準がメンバーに見えない: ' + topic.slice(0, 200));
-      await click('個室'); await sleep(300);
+      await nav(0); await sleep(300);
       await type('.formbody textarea', 'デモ操作の担当');
       await js(`(() => { const ts = document.querySelectorAll('.formbody textarea'); ts[1].value = 'PCを操作してデモを見せる役をやりたい'; ts[1].dispatchEvent(new Event('input', { bubbles: true })); })()`);
       await click('内容を確認する'); await sleep(400);
       await click('この内容で預ける'); await idle();
       await shot('deposited');
       // 幹事のPCで会議が進むのを待つ（こちらはAPIキーなし）
-      await until(async () => { await click('会議室').catch(() => {}); return (await text('#view')).includes('推薦案（第1回の議論）'); }, '幹事のPCで進んだ会議が届かない', 120000);
+      await until(async () => { await nav(1).catch(() => {}); return (await text('#view')).includes('推薦案（第1回の議論）'); }, '幹事のPCで進んだ会議が届かない', 120000);
       if (!(await text('#view')).includes('りょうま')) throw new Error('幹事の名前がメンバー側に出ていない');
       await until(async () => !(await js(`[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('この案を承認する')).disabled`)), '承認ボタンが押せない', 60000);
       await click('この案を承認する'); await idle();

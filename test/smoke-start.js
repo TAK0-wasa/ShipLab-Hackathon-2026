@@ -38,10 +38,11 @@ app.whenReady().then(async () => {
     await type('#c-name', 'りょうま');
     await type('#c-theme', 'かゆいところに手が届くアプリ');
     await type('#c-criteria', 'テーマに合っているか\n新しさがあるか ×2\n完成度・実際に動くか');
-    await js(`document.querySelector('#c-demo').checked = true`);
+    await js(`window.api.saveConfig({ demo: true })`); // 見本モードは設定の奥にあるので、テストでは直接入れる
     await shot('s2-create');
     await click('会議を作る'); await sleep(1200);
     await need('#view', ['招待コード', '幹事： りょうま', '見本モード'], '作成後の設定画面');
+    if (await js(`document.querySelector('#s-more').open || document.querySelector('#s-key').checkVisibility()`)) throw new Error('上級者向けの設定が最初から開いている');
     await need('#who', ['りょうま（幹事）', '見本モード', 'このPCだけ'], 'ヘッダー');
     await need('#switch', ['会議：', 'かゆいところに手が届くアプリ'], '会議の切り替えボタン');
     if (await js(`!!document.querySelector('#side')`)) throw new Error('左側の一覧が残っている');
@@ -54,8 +55,9 @@ app.whenReady().then(async () => {
     for (const msg of ['集まらなくても案が決まるアプリを作りたい', '実体験から話せるところが好き。デモが見せにくいのが不安。', '締切までに確実に動くこと', '画面を担当できる。平日の夜に2時間ずつ使える']) {
       await type('#chatInput', msg); await click('送信'); await idle();
     }
-    await need('.chat-head', ['✓ 案', '✓ 実装でできること', '聞き取りは済みました'], '進み具合');
-    await click('預ける'); await idle();
+    await need('.todo', ['内容を確認して預ける', '聞き取りが終わりました'], 'いまやること');
+    if ((await js(`document.querySelectorAll('.todo .checks li.ok').length`)) !== 4) throw new Error('聞き取りの4項目に済みの印が付いていない');
+    await click('預ける内容を確認する'); await idle();
     await need('.side', ['預ける内容の確認', '締切までに確実に動くこと'], '確認画面');
     // 2.5 預ける前に手直しする
     await click('手直しする'); await sleep(300);
@@ -97,7 +99,7 @@ app.whenReady().then(async () => {
     await shot('s5a-menu');
     await click('新しい会議を作る'); await sleep(300);
     await type('#c-theme', 'お別れ会の店決め');
-    await js(`document.querySelector('#c-demo').checked = true`);
+    await js(`window.api.saveConfig({ demo: true })`); // 見本モードは設定の奥にあるので、テストでは直接入れる
     await click('会議を作る'); await sleep(1500);
     await need('#switch', ['お別れ会の店決め'], '2つ目の会議に切り替わる');
     await nav(0); await sleep(300);
@@ -131,19 +133,18 @@ app.whenReady().then(async () => {
     await click('この会議から抜ける'); await sleep(500);
     await need('#view', ['会議を作る', '招待コードで参加する'], '抜けたあと');
     await click('メンバーとして参加する'); await sleep(300);
-    await need('#view', ['あなたの名前', '招待コード', '詳しい設定'], '参加画面');
-    if (await js(`document.querySelector('#j-more').open`)) throw new Error('詳しい設定が最初から開いている');
-    if (await js(`(() => { const e = document.querySelector('#j-key'); return !!e && e.checkVisibility(); })()`)) throw new Error('参加画面にAPIキーの欄が見えている');
+    await need('#view', ['あなたの名前', '招待コード'], '参加画面');
+    if (await js(`!!document.querySelector('#j-key') || document.querySelector('#view').innerText.includes('APIキー')`)) throw new Error('参加画面にAPIキーの欄が残っている');
     await shot('s5c-join');
     await type('#j-name', 'りょうま');
     await type('#j-code', 'でたらめ');
     await click('参加する'); await sleep(400);
     await need('#status', ['招待コードの形が違います'], '不正な招待コード');
     await type('#j-code', code);
-    await js(`document.querySelector('#j-demo').checked = false`);
+    await js(`window.api.saveConfig({ demo: false })`);
     await click('参加する'); await sleep(1500);
     await need('#who', ['りょうま（幹事）'], '参加後のヘッダー');
-    await need('.chat', ['APIキーなしで参加している', '案の名前', '外したくない条件'], '入力フォーム');
+    await need('.chat', ['AIのサーバーが使えない', '案の名前', '外したくない条件'], '入力フォーム');
     await type('.formbody textarea', '発表タイマー');
     await js(`(() => { const ts = document.querySelectorAll('.formbody textarea'); ts[1].value = '発表の残り時間を教える'; ts[1].dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await shot('s6-form');

@@ -73,8 +73,10 @@ app.whenReady().then(async () => {
     await type('#chatInput', 'みんなが集まれなくても案が決まるアプリを作りたい');
     await click('送信'); await idle();
     const chatText = await js(`document.querySelector('.chat').innerText`);
-    if (chatText.includes('<<') || !chatText.includes('✓ 案') || !chatText.includes('あと3問')) throw new Error('進み具合の表示がおかしい: ' + chatText.slice(0, 200));
-    await click('ここまでで預ける'); await idle();
+    const todoText = await js(`document.querySelector('.todo').innerText`);
+    const okN = await js(`document.querySelectorAll('.todo .checks li.ok').length`);
+    if (chatText.includes('<<') || okN !== 1 || !todoText.includes('あと3問')) throw new Error('進み具合の表示がおかしい: ' + okN + ' / ' + todoText.slice(0, 200));
+    await click('預ける内容を確認する'); await idle();
     await shot('1-deposit-preview');
     await click('この内容で預ける'); await idle();
     win.setContentSize(1180, 1500); await sleep(500);

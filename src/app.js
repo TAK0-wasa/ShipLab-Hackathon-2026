@@ -636,7 +636,7 @@
     return h(
       'div',
       { class: 'chat' },
-      h('div', { class: 'chat-head' }, h('b', {}, `${S.cfg.name}さんの代理人と話す`), h('div', { class: 'hint' }, 'APIキーなしで参加しているので、代理人との会話の代わりに、このフォームで考えを預けます。入力した内容はこのPCに下書きとして残り、預けるまで他のメンバーには見えません。')),
+      h('div', { class: 'chat-head' }, h('b', {}, `${S.cfg.name}さんの代理人と話す`), h('div', { class: 'hint' }, 'この会議ではAIのサーバーが使えないので、代理人との会話の代わりに、このフォームで考えを預けます。入力した内容はこのPCに下書きとして残り、預けるまで他のメンバーには見えません。')),
       h(
         'div',
         { class: 'msgs formbody' },
@@ -1379,21 +1379,21 @@
     S.error = msg;
     renderStatus();
   };
+  // 自分のAPIキーと見本モードは、ふだん使わないので設定の「上級者向け」にだけ置く（AIは会議のサーバー経由で動く）
   const aiFields = (prefix) => [
-    h('h3', { style: 'margin-top:20px' }, 'AI'),
-    field(prefix + 'key', 'Claude APIキー（任意）', { type: 'password', placeholder: !S.cfg.hasApiKey && S.cfg.serverAi ? '入力不要（サーバー経由でAIを使います）' : S.cfg.keyBundled ? '入力不要（アプリに入っているキーを使います）' : S.cfg.hasApiKey ? '設定済み（変えるときだけ入力）' : 'sk-ant-…' }, S.cfg.keyBundled ? 'このアプリにはAPIキーがあらかじめ入っているので、入力しなくてもAIが動きます。自分のキーを使いたいときだけ入力してください。' : 'このPCにだけ保存されます。キーがあると、個室で代理人と会話でき、このアプリが会議を進められます。'),
-    h('label', { class: 'check' }, h('input', { id: prefix + 'demo', type: 'checkbox', checked: !!S.cfg.demo }), ' 見本モード：APIキーなしで、決まった見本の応答で画面を試す'),
-    h('div', { class: 'hint' }, '見本モードの応答は本物のAIではありません。画面の流れを費用なしで確かめるためのものです。'),
+    field(prefix + 'key', '自分のClaude APIキー', { type: 'password', placeholder: S.cfg.hasApiKey ? '設定済み（変えるときだけ入力）' : 'sk-ant-…（入れなくても動きます）' }, 'サーバー経由のAIが使えないときの予備です。入れると、このPCではサーバーを通らず、このキーでAIを呼びます。キーはこのPCにだけ暗号化して保存され、ほかのメンバーには送られません。'),
+    S.cfg.hasApiKey ? h('label', { class: 'check' }, h('input', { id: prefix + 'keyoff', type: 'checkbox' }), ' 保存してあるAPIキーを消して、サーバー経由に戻す') : null,
+    h('label', { class: 'check', style: 'margin-top:14px' }, h('input', { id: prefix + 'demo', type: 'checkbox', checked: !!S.cfg.demo }), ' 見本モード：決まった見本の応答で画面を試す'),
+    h('div', { class: 'hint' }, '見本モードの応答は本物のAIではありません。画面の流れを費用なしで確かめるためのものです（自分のAPIキーが入っているときは働きません）。'),
   ];
 
   async function createMeeting() {
     const name = val('c-name');
     const theme = val('c-theme');
     if (!name || !theme) return fail('あなたの名前とテーマを入力してください。');
-    const patch = { name, room: '', supabaseUrl: val('c-surl'), supabaseKey: val('c-skey'), demo: $('c-demo').checked };
+    const patch = { name, room: '', supabaseUrl: val('c-surl'), supabaseKey: val('c-skey') };
     // アプリに入っている接続先で作る会議は、番号（8文字）がそのまま招待コードになる
     patch.room = sameDb(patch.supabaseUrl, patch.supabaseKey) ? newRoomCode() : 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-    if (val('c-key')) patch.apiKey = val('c-key');
     if (patch.supabaseUrl || patch.supabaseKey) {
       // 別々のPCから入れる会議にするときは、先に読み書きできるか確かめる
       S.progress = '共有データベースにつながるか確かめています';
@@ -1439,8 +1439,7 @@
       S.notice = 'この会議にはすでに参加しています。切り替えました。';
       return renderStatus();
     }
-    const patch = { name, room: inv.r, supabaseUrl: inv.u || '', supabaseKey: inv.k || '', demo: $('j-demo').checked };
-    if (val('j-key')) patch.apiKey = val('j-key');
+    const patch = { name, room: inv.r, supabaseUrl: inv.u || '', supabaseKey: inv.k || '' };
     S.error = '';
     const prev = S.cfg.room;
     S.cfg = await api.saveConfig(patch);
@@ -1477,7 +1476,6 @@
           field('c-criteria', '評価基準（1行に1つ。重みを付けたい基準は、行の最後に「×2」）', { rows: 4, placeholder: 'テーマに合っているか\n新しさがあるか ×2\n完成度・実際に動くか\nプレゼンで伝わるか' }, '点数の70点分は、この基準ごとの採点で決まります。空欄だと「テーマに合っているか」だけで採点します。'),
           field('c-cond', '締切・条件（任意）', { placeholder: '例：3人チーム、開発期間は7日間、11/18締切' }),
           field('c-size', 'メンバーの人数（幹事を含む）', { type: 'number', min: '2', max: '12', value: '3' }, 'この人数が預け終わると、会議が自動で始まります。'),
-          aiFields('c-'),
           (() => {
             const fields = [
               field('c-surl', 'Project URL', { value: S.cfg.dbDefault ? S.cfg.dbDefault.url : S.cfg.supabaseUrl || '', placeholder: 'https://xxxx.supabase.co' }),
@@ -1511,8 +1509,6 @@
           field('j-name', 'あなたの名前', { value: S.cfg.name || '', placeholder: '例：あおい' }),
           field('j-code', '招待コード', { placeholder: '例：K7M2-9QXD（幹事から送られてきた8文字）', autocomplete: 'off', spellcheck: 'false' }),
           h('div', { class: 'hint', style: 'margin-top:8px' }, '入力はこの2つだけです。参加すると、あなたの代理人と1対1で話す画面が開きます。'),
-          // ふだんは使わない項目（自分のAPIキー・見本モード）は畳んでおく
-          h('details', { class: 'more', id: 'j-more' }, h('summary', {}, '詳しい設定（ふつうは不要）'), aiFields('j-'), h('div', { class: 'hint', style: 'margin-top:8px' }, '何も入れなくても参加できます。AIは会議のサーバー経由で動きます（サーバーが無い会議では、入力フォームで考えを預け、会議は幹事のアプリが進めます）。')),
           h('div', { class: 'row end', style: 'margin-top:16px' }, back, h('button', { class: 'btn', onclick: joinMeeting }, '参加する'))
         )
       );
@@ -1547,7 +1543,7 @@
     if (!ready() || S.startMode) return viewStart();
     const r = roomInfo();
     const leader = (S.snap.member[r.leaderId] || {}).name || '';
-    const ai = !S.cfg.hasApiKey && !S.cfg.demo && S.cfg.serverAi ? 'サーバー経由（APIキーは不要。代理人と会話でき、このアプリが会議を進められます）' : S.cfg.keyBundled ? 'アプリに入っているAPIキーを使用（代理人と会話でき、このアプリが会議を進められます）' : S.cfg.hasApiKey ? 'APIキーあり（代理人と会話でき、このアプリが会議を進められます）' : S.cfg.demo ? '見本モード（決まった見本の応答。APIは呼びません）' : 'なし（フォームで預け、会議は幹事のアプリが進めます）';
+    const ai = S.cfg.hasApiKey ? '自分のAPIキーを使用' : S.cfg.demo ? '見本モード（決まった見本の応答。本物のAIではありません）' : S.cfg.serverAi ? '使えます（会議のサーバー経由。設定は不要です）' : '使えません（フォームで預け、会議は幹事のアプリが進めます）';
     const copy = async () => {
       try {
         await navigator.clipboard.writeText(inviteCode());
@@ -1562,6 +1558,7 @@
       if (!name) return fail('名前を入力してください。');
       const patch = { name, model: val('s-model') || 'claude-sonnet-5-5', demo: $('s-demo').checked, webSearch: $('s-web').checked };
       if (val('s-key')) patch.apiKey = val('s-key');
+      else if ($('s-keyoff') && $('s-keyoff').checked) patch.clearApiKey = true;
       S.error = '';
       S.cfg = await api.saveConfig(patch);
       await enterRoom();
@@ -1615,10 +1612,15 @@
         h('h2', {}, 'あなたの設定'),
         field('s-name', '名前', { value: S.cfg.name || '' }),
         isLeader() ? field('s-size', 'メンバーの人数（幹事を含む）', { type: 'number', min: '2', max: '12', value: String(S.teamSize) }) : null,
-        aiFields('s-'),
-        field('s-model', 'モデル', { value: S.cfg.model || 'claude-sonnet-5-5' }, '例：claude-sonnet-5-5（標準）／claude-haiku-5-5（速くて安い）'),
-        h('label', { class: 'check', style: 'margin-top:14px' }, h('input', { id: 's-web', type: 'checkbox', checked: S.cfg.webSearch !== false }), ' 進行役AIが「技術的に作れるか」を調べるときに、Web検索を使う'),
-        h('div', { class: 'hint' }, 'APIキーがあるときだけ働きます。検索は1回の会議で数回までで、検索1回ごとに追加の費用がかかります。切ると、AIの知識だけで判断します。'),
+        h(
+          'details',
+          { class: 'more', id: 's-more' },
+          h('summary', {}, '上級者向けの設定（ふつうは不要）'),
+          aiFields('s-'),
+          field('s-model', 'モデル', { value: S.cfg.model || 'claude-sonnet-5-5' }, '例：claude-sonnet-5-5（標準）／claude-haiku-5-5（速くて安い）'),
+          h('label', { class: 'check', style: 'margin-top:14px' }, h('input', { id: 's-web', type: 'checkbox', checked: S.cfg.webSearch !== false }), ' 進行役AIが「技術的に作れるか」を調べるときに、Web検索を使う'),
+          h('div', { class: 'hint' }, '検索は1回の会議で数回までで、検索1回ごとに追加の費用がかかります。切ると、AIの知識だけで判断します。')
+        ),
         h('div', { class: 'row end', style: 'margin-top:16px' }, h('button', { class: 'btn', onclick: save }, '保存する'))
       ),
       h(
