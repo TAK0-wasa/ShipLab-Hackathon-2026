@@ -10,6 +10,10 @@ contextBridge.exposeInMainWorld('api', {
     const { onText, ...rest } = req || {};
     return ipcRenderer.invoke('llm', rest);
   },
+  diagnose: () => ipcRenderer.invoke('diag:run'),
+  voiceStart: () => ipcRenderer.invoke('voice:start'),
+  checkUpdate: () => ipcRenderer.invoke('update:check'),
+  wipeLocal: () => ipcRenderer.invoke('app:wipe'),
   testDb: (url, key) => ipcRenderer.invoke('store:test', url, key),
   peekRoom: (room) => ipcRenderer.invoke('store:peek', room),
   store: {

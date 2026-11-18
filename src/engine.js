@@ -375,7 +375,7 @@
       }
       const supportRate = wsum ? ssum / wsum / 5 : 0.6;
       const j = (judge || {})[c.id] || {};
-      const marks = crits.map((k, i) => ({ name: k.name, weight: k.weight, score: clamp5(j.marks && j.marks[i]) }));
+      const marks = crits.map((k, i) => ({ name: k.name, weight: k.weight, score: clamp5(j.marks && j.marks[i]), note: str(j.notes && j.notes[i]) }));
       const cw = marks.reduce((t, m) => t + m.weight, 0);
       const crit = marks.length && cw ? r1((marks.reduce((t, m) => t + m.weight * m.score, 0) / cw / 5) * RATIO.crit) : null;
       const support = r1(supportRate * (crit === null ? 100 : RATIO.support));
@@ -408,6 +408,27 @@
     return { table, topId: top ? top.candId : null, runnerUpId: second ? second.candId : null, tie, allVetoed, ratio: crits.length ? RATIO : null };
   }
 
+  // 推薦案と次点の点差が、どの項目でついたかを出す（AIの文章ではなく、点数からそのまま計算する）
+  // 戻り値: { title, diff, rows: [{ label, pts, a, b }] }。pts は推薦案が上回った点数（マイナスは次点が上）
+  function compareTop(rec) {
+    if (!rec || !rec.table) return null;
+    const a = rec.table.find((t) => t.candId === rec.topId);
+    const b = rec.table.find((t) => t.candId === rec.runnerUpId);
+    if (!a || !b || a.total === undefined || b.total === undefined) return null;
+    const r1 = (x) => Math.round(x * 10) / 10;
+    const rows = [];
+    const cw = (a.marks || []).reduce((t, m) => t + m.weight, 0);
+    if (a.crit !== null && b.crit !== null && cw) {
+      (a.marks || []).forEach((m, i) => {
+        const bm = (b.marks || [])[i];
+        if (!bm) return;
+        rows.push({ label: m.name, pts: r1((((m.score - bm.score) * m.weight) / cw / 5) * RATIO.crit), a: `${m.score}/5`, b: `${bm.score}/5` });
+      });
+    }
+    rows.push({ label: 'メンバーの支持', pts: r1(a.support - b.support), a: String(a.support), b: String(b.support) });
+    return { title: b.title, diff: r1(a.total - b.total), rows: rows.filter((x) => x.pts !== 0).sort((x, y) => y.pts - x.pts) };
+  }
+
   // 進行役AIが、各案を評価基準ごとに5段階で採点する（公開情報だけを見る）
   async function facilitatorJudge(ctx, env, criteria) {
     const cands = activeCands(env.snap);
@@ -424,6 +445,7 @@
       '- 案に「実現性」と「締切までに作れる範囲」が書かれていれば、完成度や実際に動くかに関わる基準では、それを踏まえて採点する。',
       '- 案どうしで差がつくように採点する。全部に3や4を並べない。根拠が案の内容から読み取れない基準は3にする。',
       '- marks は、下の評価基準の番号順に並べた整数の配列にする（基準の数と同じ長さ）。',
+      '- notes は、marks と同じ順・同じ長さの配列。その点にした根拠を、基準ごとに1文（40〜80字）で書く。案のどの記述（誰向けか・解決すること・目玉機能・実現性）からそう判断したかを具体的に挙げる。「良い」「弱い」だけの一般論は書かない。判断材料が案から読み取れないときは「案の記述からは判断できないため3」と書く。',
       '- comment は、その案がどの基準に強く、どの基準に弱いかを1〜2文で。',
       '- 出力はJSONオブジェクトだけ。',
     ].join('\n');
@@ -440,7 +462,7 @@
       candText(cands, env.snap.member, true), // 誰の案か・合体案か・AIの新案かは渡さない
       '',
       '出力形式:',
-      '{"scores":[{"candId":"","marks":[3,4,2],"comment":""}]}',
+      '{"scores":[{"candId":"","marks":[3,4,2],"notes":["","",""],"comment":""}]}',
     ].join('\n');
     let judge = {};
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -448,7 +470,7 @@
       judge = {};
       for (const x of Array.isArray(out.scores) ? out.scores : []) {
         if (!x || !env.snap.cand[x.candId] || !Array.isArray(x.marks) || x.marks.length < criteria.length) continue;
-        judge[x.candId] = { marks: criteria.map((_, i) => clamp5(x.marks[i])), comment: str(x.comment) };
+        judge[x.candId] = { marks: criteria.map((_, i) => clamp5(x.marks[i])), notes: criteria.map((_, i) => str(Array.isArray(x.notes) ? x.notes[i] : '')), comment: str(x.comment) };
       }
       if (cands.every((c) => judge[c.id])) return judge;
     }
@@ -705,6 +727,15 @@
   }
 
   // 会議を進める。mode: 'full'（最初から） / 'rerun'（新しい意見を受けて評価からやり直し）
+  // 途中で止まった会議を「続きから」再開できるか（進み具合の記録があり、参加者が変わっていない）
+  function canResume(snap) {
+    const st = snap.state.main || {};
+    const ck = st.ck;
+    if (!ck || st.phase !== 'collecting' || ck.round !== st.round || !Object.keys(snap.cand).length) return false;
+    const now0 = Object.keys(snap.brief).filter((id) => snap.member[id]);
+    return Array.isArray(ck.participants) && ck.participants.length === now0.length && ck.participants.every((id) => now0.includes(id));
+  }
+
   async function runMeeting(ctx0, opts) {
     let ctx = ctx0;
     const { store, me } = ctx;
@@ -722,15 +753,30 @@
     const participants = Object.keys(snap.brief).filter((id) => snap.member[id]);
     if (participants.length < 2) throw new Error('考えを預けたメンバーが2人以上そろうと会議を始められます。');
     const full = (opts && opts.mode) === 'full' || !Object.keys(snap.cand).length || st.phase === 'collecting';
+    // 途中で止まった会議の「続きから」: 前回の進み具合（st.ck）が残っていて、参加者が同じなら、済んだ段階を飛ばす
+    const ck0 = st.ck;
+    const resume = (opts && opts.mode) === 'resume' && full && canResume(snap);
 
-    env = { snap, state: st, round: (st.round || 0) + 1, participants, wantParts: [], owner: 'facilitator' };
+    env = { snap, state: st, round: resume ? st.round : (st.round || 0) + 1, participants, wantParts: [], owner: 'facilitator' };
     const baseLlm = ctx.llm;
     let callNo = 0;
     ctx = {
       ...ctx,
       llm: async (req) => {
         const t0 = now();
-        const out = await baseLlm(req);
+        // 一時的な失敗（通信の途切れ・混雑）は、少し待って自動でやり直す。設定の誤りや回数の上限は、やり直しても直らないのですぐ止める
+        let out;
+        for (let attempt = 1; ; attempt++) {
+          try {
+            out = await baseLlm(req);
+            break;
+          } catch (e) {
+            const msg = String((e && e.message) || e);
+            if (attempt >= 3 || /\b(400|401|403)\b|APIキー|上限に達し|見つかりません|未設定/.test(msg)) throw e;
+            await progress(`AIの応答が途切れたので、もう一度試しています（${attempt + 1}回目）`, env.state.stage, env.state.speaker);
+            await sleep(ctx.retryWait === undefined ? 2500 * attempt : ctx.retryWait);
+          }
+        }
         try {
           const user = req.messages[0].content;
           const id = `c${String(env.round).padStart(2, '0')}-${String(++callNo).padStart(2, '0')}-${t0.toString(36)}`;
@@ -741,7 +787,7 @@
         return out;
       },
     };
-    await setState(ctx, env, { runner: me.id, runnerName: me.name, phase: 'meeting', error: '' });
+    await setState(ctx, env, { runner: me.id, runnerName: me.name, phase: 'meeting', error: '', runStartedAt: now() });
     // 同時に2人が始めた場合に備えて、少し待ってから自分が進行役になれたか確かめる
     await sleep(ctx.lockWait === undefined ? 1200 : ctx.lockWait);
     const check = (await snapshot(store)).state.main || {};
@@ -751,13 +797,25 @@
       const members = participants.map((id) => ({ id, name: snap.member[id].name || '?' }));
       const namesText = members.map((m) => m.name).join('・');
 
+      // 進み具合の記録。段階が1つ済むたびに保存し、止まったときに「続きから」再開できるようにする
+      const ck = resume
+        ? { ...ck0, r1: (ck0.r1 || []).slice(), r2: (ck0.r2 || []).slice(), wantParts: (ck0.wantParts || []).slice() }
+        : { round: env.round, participants, r1: [], r2: [], wantParts: [], merge: false, feas: false };
+      const saveCk = () => setState(ctx, env, { ck: { ...ck, r1: ck.r1.slice(), r2: ck.r2.slice(), wantParts: ck.wantParts.slice() } });
+
+      if (full && resume) {
+        env.wantParts = ck.wantParts.slice();
+        await progress('止まったところから会議を再開しています', env.state.stage || 'round1', '');
+        await postMsg(ctx, env, { speaker: 'system', speakerName: 'システム', type: 'system', text: '止まったところから、会議を再開します' });
+      }
       if (full) {
+        if (!resume) {
         await progress('会議の準備をしています', 'round1', '');
         for (const kind of ['cand', 'eval', 'question', 'approval', 'skill', 'call']) {
           for (const id of Object.keys(snap[kind])) await store.del(kind, id);
           snap[kind] = {};
         }
-        await setState(ctx, env, { round: env.round, recommendation: null, tieAsked: false, participants });
+        await setState(ctx, env, { round: env.round, recommendation: null, tieAsked: false, participants, ck: { ...ck } });
         await postMsg(ctx, env, { speaker: 'system', speakerName: 'システム', type: 'system', text: `会議を始めます（参加: ${namesText}さんの代理人）` });
 
         let order = 0;
@@ -784,9 +842,11 @@
             snap.cand[id] = data;
           }
         }
+        }
         if (!activeCands(snap).length) throw new Error('会議にかけられる案がありません。');
 
         for (const m of members) {
+          if (ck.r1.includes(m.id)) continue; // 前回済んでいる
           await progress(`${m.name}さんの代理人が意見を述べています`, 'round1', `${m.name}さんの代理人`);
           env.owner = m.id;
           const out = await agentTurn(ctx, env, m, snap.brief[m.id], 'round1');
@@ -801,16 +861,24 @@
             snap.skill[m.id] = sk;
           }
           await postMsg(ctx, env, { speaker: m.id, speakerName: `${m.name}さんの代理人`, type: 'statement', text: str(out.statement) });
-          await setState(ctx, env, {});
+          ck.r1.push(m.id);
+          ck.wantParts = env.wantParts.slice();
+          await saveCk();
         }
 
-        await progress('進行役AIが合体案と新しい案を作っています', 'merge', '進行役AI');
-        await facilitatorMerge(ctx, env);
-        await setState(ctx, env, {});
+        if (!ck.merge) {
+          await progress('進行役AIが合体案と新しい案を作っています', 'merge', '進行役AI');
+          await facilitatorMerge(ctx, env);
+          ck.merge = true;
+          await saveCk();
+        }
 
-        await progress('進行役AIが、技術的に作れるかを調べています', 'feas', '進行役AI');
-        await facilitatorFeasibility(ctx, env);
-        await setState(ctx, env, {});
+        if (!ck.feas) {
+          await progress('進行役AIが、技術的に作れるかを調べています', 'feas', '進行役AI');
+          await facilitatorFeasibility(ctx, env);
+          ck.feas = true;
+          await saveCk();
+        }
       } else {
         for (const id of Object.keys(snap.approval)) await store.del('approval', id);
         snap.approval = {};
@@ -820,6 +888,7 @@
 
       const mode = full ? 'round2' : 'rerun';
       for (const m of members) {
+        if (full && ck.r2.includes(m.id)) continue; // 前回済んでいる
         await progress(`${m.name}さんの代理人が${full ? '合体案と新案を評価' : '評価を見直'}しています`, 'round2', `${m.name}さんの代理人`);
         env.owner = m.id;
         const out = await agentTurn(ctx, env, m, snap.brief[m.id], mode);
@@ -833,7 +902,10 @@
           await store.put('question', qid, data);
           snap.question[qid] = data;
         }
-        await setState(ctx, env, {});
+        if (full) {
+          ck.r2.push(m.id);
+          await saveCk();
+        } else await setState(ctx, env, {});
       }
 
       await progress('進行役AIが推薦案をまとめています', 'explain', '進行役AI');
@@ -892,12 +964,12 @@
         type: 'recommend',
         text: `推薦は「${top ? top.title : '?'}」です。${exp.reason}${rec.tie && second ? `（「${second.title}」と評価が並んでいます）` : ''}`,
       });
-      await setState(ctx, env, { phase: 'review', recommendation, tieAsked, runner: null, runnerName: '', lastRunAt: now(), progress: '', stage: '', speaker: '' });
+      await setState(ctx, env, { phase: 'review', recommendation, tieAsked, runner: null, runnerName: '', lastRunAt: now(), lastRunMs: env.state.runStartedAt ? now() - env.state.runStartedAt : 0, progress: '', stage: '', speaker: '', ck: null, error: '' });
       notify('');
       return recommendation;
     } catch (e) {
       try {
-        await setState(ctx, env, { runner: null, runnerName: '', phase: Object.keys(env.snap.cand).length && env.state.recommendation ? 'review' : 'collecting', error: e.message, progress: '', stage: '', speaker: '' });
+        await setState(ctx, env, { runner: null, runnerName: '', phase: Object.keys(env.snap.cand).length && env.state.recommendation ? 'review' : 'collecting', error: String((e && e.message) || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), failedAt: now(), progress: '', stage: '', speaker: '' });
       } catch {}
       notify('');
       throw e;
@@ -983,6 +1055,8 @@
     extractBrief,
     normalizeBrief,
     recommend,
+    compareTop,
+    canResume,
     runMeeting,
     addUpdate,
     answerQuestion,

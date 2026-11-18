@@ -59,6 +59,12 @@ app.whenReady().then(async () => {
       await until(async () => (await text('#overlay')).includes('決定'), '決定の表示が出ない', 20000);
       await shot('decided');
       await closeOverlay();
+      // メンバーの画面にも決定が届いてから、幹事が会議のデータを削除する
+      await until(async () => fs.existsSync(path.join(DIR, 'member-saw-decided')), 'メンバーに決定が届かない', 90000);
+      await click('設定・招待'); await sleep(300);
+      await click('この会議のデータをすべて削除する'); await sleep(200);
+      await click('本当に削除する'); await sleep(2500);
+      if (!(await text('#view')).includes('会議を作る')) throw new Error('削除したあと、はじめの画面に戻らない');
     } else {
       const code = fs.readFileSync(path.join(DIR, 'code.txt'), 'utf8');
       await click('メンバーとして参加する'); await sleep(300);
@@ -82,6 +88,11 @@ app.whenReady().then(async () => {
       await click('この案を承認する'); await idle();
       await until(async () => (await text('#overlay')).includes('決定'), '幹事の承認後、決定が届かない', 90000);
       await shot('decided');
+      await closeOverlay();
+      fs.writeFileSync(path.join(DIR, 'member-saw-decided'), 'ok');
+      // 幹事が会議のデータを削除すると、メンバーの画面からも会議がなくなる
+      await until(async () => (await text('#status')).includes('幹事によって削除されました'), '削除されたことがメンバーに伝わらない', 60000);
+      if (!(await text('#view')).includes('招待コードで参加する')) throw new Error('削除されたあと、はじめの画面に戻らない');
     }
     if (errors.length) throw new Error('コンソールエラー: ' + errors.join(' / '));
     fs.writeFileSync(path.join(DIR, `ok-${ROLE}`), 'ok');

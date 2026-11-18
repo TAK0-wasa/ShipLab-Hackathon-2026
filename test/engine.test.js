@@ -82,6 +82,15 @@ function mockLlm(opts) {
     assert.deepStrictEqual([tb.crit, tb.support, tb.total], [14, 30, 44]);
     assert.strictEqual(r.topId, 'a');
     assert.deepStrictEqual(r.ratio, { crit: 70, support: 30 });
+    // 次点との差の内訳: 基準 x・y で +28 ずつ、支持で -12。合計は +44 で、内訳の和と合う
+    const gap = Engine.compareTop(r);
+    assert.strictEqual(gap.diff, 44);
+    assert.deepStrictEqual(gap.rows.map((x) => [x.label, x.pts]), [['x', 28], ['y', 28], ['メンバーの支持', -12]]);
+    assert.strictEqual(gap.rows.reduce((t, x) => t + x.pts, 0), gap.diff);
+    assert.strictEqual(Engine.compareTop({ table: r.table, topId: 'a', runnerUpId: null }), null);
+    // 基準ごとの根拠（notes）は、点と一緒に表へ入る。無くても採点は通る
+    const rn = Engine.recommend(cands.slice(0, 1), {}, ['p'], { a: { marks: [5, 1], notes: ['根拠1'] } }, crit);
+    assert.deepStrictEqual(rn.table[0].marks.map((m) => m.note), ['根拠1', '']);
 
     // 基準の重み: [5,1] に重み 1:2 → (5+2)/3/5*70 = 32.7
     r = Engine.recommend(cands.slice(0, 1), {}, ['p'], { a: { marks: [5, 1] } }, [{ name: 'x', weight: 1 }, { name: 'y', weight: 2 }]);
@@ -221,6 +230,53 @@ function mockLlm(opts) {
     await assert.rejects(() => Engine.runMeeting({ store, llm: broken('judge'), me: people[0], lockWait: 0 }, { mode: 'full' }), /読み取れません/);
     snap = await Engine.snapshot(store);
     assert.strictEqual(snap.state.main.runner, null, '失敗しても進行役の印は外れる');
+  }
+
+  // ---- 止まった会議を「続きから」再開する／一時的な失敗は自動でやり直す ----
+  {
+    const good = mockLlm({});
+    const taskOf = (req) => (req.messages[0].content.match(/【タスク:(\w+)】/) || [])[1] || '';
+    // 直前の会議は採点（judge）で止まっている: 発言と合体案は済んでいるので、続きは採点とまとめだけ
+    snap = await Engine.snapshot(store);
+    assert.ok(snap.state.main.error && snap.state.main.failedAt, '止まった理由が残る');
+    assert.ok(Engine.canResume(snap), '続きから再開できる');
+    const candsBefore = Object.keys(snap.cand).length;
+    let calls = [];
+    const counting = async (req) => { calls.push(taskOf(req)); return good(req); };
+    const r4 = await Engine.runMeeting({ store, llm: counting, me: people[0], lockWait: 0 }, { mode: 'resume' });
+    snap = await Engine.snapshot(store);
+    assert.ok(r4.topId, '再開して最後まで進む');
+    assert.ok(!calls.includes('round1') && !calls.includes('merge') && !calls.includes('feas') && !calls.includes('round2'), '済んだ段階はやり直さない: ' + calls.join(','));
+    assert.strictEqual(Object.keys(snap.cand).length, candsBefore, '案が二重に作られない');
+    assert.strictEqual(snap.state.main.phase, 'review');
+    assert.ok(!snap.state.main.ck && !snap.state.main.error, '終わったら進み具合の記録と、止まった理由は消える');
+    assert.ok(!Engine.canResume(snap), '終わった会議は再開の対象にならない');
+
+    // 途中（合体案づくり）で止まる → 1回目の発言は済んでいるので、再開では合体案から
+    const failAt = (task, msg) => async (req) => { if (taskOf(req) === task) throw new Error(msg); return good(req); };
+    await assert.rejects(() => Engine.runMeeting({ store, llm: failAt('merge', 'Claude APIエラー (403) forbidden'), me: people[0], lockWait: 0, retryWait: 0 }, { mode: 'full' }), /403/);
+    snap = await Engine.snapshot(store);
+    assert.strictEqual(snap.state.main.phase, 'collecting');
+    assert.deepStrictEqual([snap.state.main.ck.r1.length, snap.state.main.ck.merge], [3, false], '1回目の発言まで済んだ記録が残る');
+    calls = [];
+    const r5 = await Engine.runMeeting({ store, llm: counting, me: people[1], lockWait: 0 }, { mode: 'resume' });
+    assert.ok(r5.topId && calls.includes('merge') && calls.includes('round2') && !calls.includes('round1'), '合体案から再開する: ' + calls.join(','));
+
+    // 一時的な失敗（通信の途切れ）は、自動でやり直して続ける
+    let n = 0;
+    const flaky = async (req) => { if (++n === 2 || n === 5) throw new Error('fetch failed'); return good(req); };
+    const r6 = await Engine.runMeeting({ store, llm: flaky, me: people[0], lockWait: 0, retryWait: 0 }, { mode: 'full' });
+    assert.ok(r6.topId, '途切れても自動でやり直して終わる');
+    // 3回続けて失敗したら止まる。設定の誤りは1回で止まる
+    n = 0;
+    await assert.rejects(() => Engine.runMeeting({ store, llm: async () => { n++; throw new Error('fetch failed'); }, me: people[0], lockWait: 0, retryWait: 0 }, { mode: 'full' }), /fetch failed/);
+    assert.strictEqual(n, 3, '一時的な失敗は3回まで試す');
+    n = 0;
+    await assert.rejects(() => Engine.runMeeting({ store, llm: async () => { n++; throw new Error('Claude APIキーが未設定です'); }, me: people[0], lockWait: 0, retryWait: 0 }, { mode: 'full' }), /未設定/);
+    assert.strictEqual(n, 1, '設定の誤りはやり直さない');
+    // 参加者が変わったら、続きからではなく最初から
+    await store.del('brief', people[2].id);
+    assert.ok(!Engine.canResume(await Engine.snapshot(store)), '参加者が変わったら再開しない');
   }
 
   // ---- 小物 ----

@@ -8,6 +8,9 @@ const os = require('os');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'adk-key-'));
 app.setPath('appData', tmp);
 process.env.KAWARINI_DB = process.env.KAWARINI_DB || 'none'; // アプリに入っている接続先は使わない
+// 以前の版で見本モードを入れたままの設定を置いておく（この版で1回だけ切れることを確かめる）
+fs.mkdirSync(path.join(tmp, 'AI代理人会議'), { recursive: true });
+fs.writeFileSync(path.join(tmp, 'AI代理人会議', 'config.json'), JSON.stringify({ name: '前の人', demo: true }));
 require('../main.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -20,6 +23,10 @@ app.whenReady().then(async () => {
   try {
     let c = await js(`window.api.getConfig()`);
     must(!c.hasApiKey, '最初からキーありになっている');
+    must(c.name === '前の人' && c.demo === false, '以前の版の見本モードが切れていない');
+    c = await js(`window.api.saveConfig({ demo: true })`);
+    must(c.demo === true && (await js(`window.api.getConfig()`)).demo === true, '切ったあと、自分で入れ直した見本モードが保たれない');
+    c = await js(`window.api.saveConfig({ demo: false })`);
     // 起動直後の画面（参加・作成の入口）に、APIキーの文言が無いこと
     must(!(await js(`document.querySelector('#view').innerText`)).includes('APIキー'), 'はじめの画面にAPIキーの文言が出ている');
     c = await js(`window.api.saveConfig({ name: 'てすと', apiKey: 'sk-ant-test-own-111' })`);

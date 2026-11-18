@@ -52,7 +52,7 @@ server.listen(0, '127.0.0.1', async () => {
   const url = `http://127.0.0.1:${server.address().port}`;
   const dir = process.env.SMOKE_OUT ? path.resolve(process.env.SMOKE_OUT) : fs.mkdtempSync(path.join(os.tmpdir(), 'adk-two-'));
   fs.mkdirSync(dir, { recursive: true });
-  for (const f of ['code.txt', 'ok-leader', 'ok-member', 'leader', 'member']) fs.rmSync(path.join(dir, f), { force: true, recursive: true });
+  for (const f of ['code.txt', 'ok-leader', 'ok-member', 'member-saw-decided', 'leader', 'member']) fs.rmSync(path.join(dir, f), { force: true, recursive: true });
   const electron = require('electron');
   const run = (role) =>
     new Promise((resolve) => {
@@ -69,8 +69,8 @@ server.listen(0, '127.0.0.1', async () => {
   const codes = await Promise.all([leader, member]);
   server.close();
   const rooms = new Set([...rows.keys()].map((k) => k.split('|')[0]));
-  console.log(`サーバーへの通信: 読み${stats.get}回・書き${stats.post}回・消し${stats.del}回・拒否${stats.denied}回 ／ 会議の数: ${rooms.size} ／ 文書の数: ${rows.size}`);
-  if (codes.every((c) => c === 0) && rooms.size === 1 && stats.denied === 0) {
+  console.log(`サーバーへの通信: 読み${stats.get}回・書き${stats.post}回・消し${stats.del}回・拒否${stats.denied}回 ／ 削除後に残った会議の数: ${rooms.size} ／ 文書の数: ${rows.size}`);
+  if (codes.every((c) => c === 0) && rooms.size === 0 && rows.size === 0 && stats.denied === 0 && stats.post > 20) {
     console.log('TWO-PC SMOKE OK', dir);
     process.exit(0);
   }

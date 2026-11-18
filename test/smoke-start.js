@@ -81,12 +81,31 @@ app.whenReady().then(async () => {
       await api.store.put('brief', 'm-kenta', mk('レシート割り勘', 'レシート撮影で各自の金額'));
     })()`);
     await until(async () => (await text('#status')).includes('会議') || !!(await js(`!!document.querySelector('.card.live')`)), '会議が自動で始まらない', 15000);
-    await nav(1); await sleep(500);
+    await nav(1);
+    // 会議中は、段階と「開始から◯秒」が出て、1秒ごとに進む
+    await until(async () => !!(await js(`!!document.querySelector('#liveElapsed')`)), '会議中の経過時間が出ない', 15000);
+    const e1 = await text('#liveElapsed'); await sleep(2200); const e2 = await text('#liveElapsed');
+    if (!e2 || e1 === e2) throw new Error('経過時間が進まない: ' + e1 + ' → ' + e2);
+    await need('.livetime', ['段階め', '開始から', '数分が目安'], '会議中の時間の案内');
     await shot('s4-live');
     await until(async () => (await text('#view')).includes('推薦案（第1回の議論）'), '推薦が出ない', 60000);
     await idle();
     await js(`document.querySelectorAll('details').forEach((d) => (d.open = true))`); await sleep(300);
-    await need('#view', ['/70 ＋ 支持 ', 'AIの新案', '実行記録（第1回：AIの呼び出し10回', '技術的に作れるか', 'AIの知識による判断（検索なし）', '【見本】', '新しさがあるか ×2：'], '会議の結果');
+    await need('#view', ['/70 ＋ 支持 ', 'AIの新案', '実行記録（第1回：AIの呼び出し10回', '技術的に作れるか', 'AIの知識による判断（検索なし）', '【見本】', '新しさがあるか ×2：', '案のどの記述からこの点にしたか', '次点「', 'との差：', '点数からそのまま計算した内訳です'], '会議の結果');
+    // 3.1 案の一覧は、1案1行の表（点数の高い順。推薦が1位。行を押すと詳細）
+    const rows = JSON.parse(await js(`JSON.stringify([...document.querySelectorAll('details.crow')].map((d) => ({ no: d.querySelector('.cno').innerText, top: d.classList.contains('top'), score: (d.querySelector('.cscore b') || {}).innerText || '' })))`));
+    if (rows.length < 4 || rows[0].no !== '1' || !rows[0].top || rows.filter((r) => r.top).length !== 1) throw new Error('案の表の並びがおかしい: ' + JSON.stringify(rows));
+    const scores = rows.filter((r) => /^\d+$/.test(r.no)).map((r) => Number(r.score));
+    if (scores.some((v, i) => i && v > scores[i - 1])) throw new Error('案が点数の高い順に並んでいない: ' + scores.join(','));
+    await need('details.fold', ['すべての案をくらべる', 'メンバーの案 3', 'AIの新案 1'], '案の表の見出し');
+    // 3.2 代理人からの確認に答える場所は「② 会議と結果」だけ。「① 考えを預ける」には案内だけが出る
+    if (!(await js(`!!document.querySelector('#sec-q')`))) throw new Error('会議と結果に、確認の欄が無い');
+    await nav(0); await sleep(400);
+    await need('#sec-qlink', ['代理人から確認が', '確認に答える'], '確認の案内');
+    if (await js(`!!document.querySelector('#sec-q') || !!document.querySelector('.side .q textarea')`)) throw new Error('考えを預ける画面に、確認の回答欄が残っている');
+    await shot('s5d-qlink');
+    await click('確認に答える'); await sleep(500);
+    if (!(await js(`!!document.querySelector('#sec-q textarea')`))) throw new Error('案内から、確認の欄に移れない');
     win.setContentSize(1180, 1500); await sleep(300);
     await shot('s5-result');
     win.setContentSize(1180, 820);

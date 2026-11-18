@@ -1,6 +1,6 @@
 // かわりに会議 — Electron メインプロセス
 // 役割: ウィンドウ表示 / 設定と個室データのローカル保存 / Claude API と共有ストア(Supabase)への通信
-const { app, BrowserWindow, ipcMain, net, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, net, safeStorage, session, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -49,6 +49,11 @@ function loadConfig() {
     }
   }
   delete cfg.apiKeyEnc;
+  // 見本モードは、ふだんは切っておく。以前の版で入れたままになっているPCも、この版で1回だけ切る
+  if (!cfg.demoOffV27) {
+    cfg.demo = false;
+    cfg.demoOffV27 = true;
+  }
   cfg.rooms = Array.isArray(raw.rooms) ? raw.rooms.filter((r) => r && r.room) : [];
   // 以前の版（会議は1つだけ）の設定を引き継ぐ
   if (cfg.room && !cfg.rooms.some((r) => r.room === cfg.room)) {
@@ -157,6 +162,8 @@ function publicConfig(cfg) {
     demo: !!cfg.demo,
     profile,
     appVersion: app.getVersion(),
+    platform: `${process.platform} ${require('os').release()}`,
+    repoUrl: REPO_URL,
     sharedMode: cfg.supabaseUrl && cfg.supabaseKey ? 'supabase' : 'local',
   };
 }
@@ -323,6 +330,136 @@ async function callClaude({ system, messages, maxTokens, search }) {
   return texts.join('') + (sources.length ? '§SRC§' + sources.slice(0, 8).join(' ') : '');
 }
 
+// ---------- 接続の診断（設定の「困ったとき・デモ用」から）----------
+// ネットワーク → 共有データベース（読む・書く）→ AIのサーバー → AIの応答 の順に試し、どこまで通るかを返す
+async function diagnose() {
+  const cfg = loadConfig();
+  const steps = [];
+  const limit = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${ms / 1000}秒待っても応答がありません`)), ms))]);
+  const step = async (label, fn, hint) => {
+    const t = Date.now();
+    try {
+      const r = (await fn()) || {};
+      steps.push({ label, ok: r.ok !== false, skip: !!r.skip, detail: r.detail || '', hint: r.ok === false ? r.hint || hint || '' : '', ms: Date.now() - t });
+      return r.ok !== false;
+    } catch (e) {
+      steps.push({ label, ok: false, detail: String((e && e.message) || e), hint: hint || '', ms: Date.now() - t });
+      return false;
+    }
+  };
+  const shared = !!(cfg.room && cfg.supabaseUrl && cfg.supabaseKey);
+  await step('ネットワーク', async () => {
+    let proxy = '';
+    try {
+      proxy = await session.defaultSession.resolveProxy(shared ? cfg.supabaseUrl : 'https://api.anthropic.com');
+    } catch {}
+    return { detail: /PROXY|SOCKS|HTTPS/i.test(proxy) ? `プロキシ経由でつなぎます（${proxy}）` : 'プロキシなしで直接つなぎます' };
+  });
+  if (!shared) {
+    steps.push({ label: '共有データベース', ok: true, skip: true, detail: 'この会議は「このPCだけ」なので、使いません', hint: '', ms: 0 });
+  } else {
+    const dbHint = 'ネットワーク（Wi-Fi・プロキシ）を確かめてください。別のネットワーク（スマホのテザリングなど）で通るなら、会場のネットワークが原因です。';
+    const readOk = await step('共有データベースを読む', async () => ({ detail: `${(await limit(storeAll(), 12000)).length}件のデータを読めました` }), dbHint);
+    if (readOk) {
+      await step('共有データベースに書く', async () => {
+        const id = 'diag-' + (cfg.memberId || 'x');
+        await limit(storePut('ping', id, { at: Date.now() }), 12000);
+        await limit(storeDel('ping', id), 12000);
+        return { detail: '書き込みと取り消しができました' };
+      }, '読めるのに書けないときは、データベースの設定（supabase_setup.sql）が古い可能性があります。');
+    }
+    await step('AIのサーバー', async () => {
+      const res = await limit(net.fetch(serverUrl(cfg), { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify({ ping: true }) }), 12000);
+      if (res.status === 404) return { ok: false, detail: 'この会議のサーバーには、AIの中継（関数 claude）がありません', hint: 'Supabase に関数「claude」を公開するか、「上級者向けの設定」に自分のAPIキーを入れてください。' };
+      const data = res.ok ? await res.json() : null;
+      if (!data || !data.ok) return { ok: false, detail: `応答がおかしいです（${res.status}）`, hint: dbHint };
+      if (!data.ready) return { ok: false, detail: 'サーバーにClaudeのAPIキーが登録されていません', hint: 'Supabase の Edge Functions → Secrets に ANTHROPIC_API_KEY を登録してください。' };
+      return { detail: 'つながりました（APIキーも登録済み）' };
+    }, dbHint);
+  }
+  if (!cfg.apiKey && cfg.demo) {
+    steps.push({ label: 'AIの応答', ok: true, skip: true, detail: '見本モードなので、本物のAIは呼びません', hint: '', ms: 0 });
+  } else {
+    await step('AIの応答', async () => {
+      const out = await limit(callClaude({ system: '指示された一言だけを返す。', messages: [{ role: 'user', content: '「OK」とだけ返してください。' }], maxTokens: 20 }), 40000);
+      return { detail: `応答がありました（${cfg.apiKey ? '自分のAPIキー' : 'サーバー経由'}）：「${String(out).split('§SRC§')[0].trim().slice(0, 20)}」` };
+    }, '「上限に達しました」と出るときは、今日の利用回数を使い切っています。それ以外は、少し待ってもう一度試すか、「上級者向けの設定」に自分のAPIキーを入れてください。');
+  }
+  return { steps, ok: steps.every((x) => x.ok), at: Date.now() };
+}
+
+// ---------- 音声入力 ----------
+// Windows に入っている音声入力（Windowsキー＋H）を、チャット欄のマイクボタンから起動する。
+// アプリ自身は音声を録音も送信もしない。聞き取りは Windows の機能が行い、結果が入力欄に文字として入る
+function startDictation(win) {
+  if (global.__mockVoice) return Promise.resolve(global.__mockVoice());
+  const manual = 'チャット欄をクリックしてから、キーボードの「Windowsキー＋H」を押すと、音声入力を始められます。';
+  if (process.platform !== 'win32') return Promise.resolve({ ok: false, msg: 'マイクボタンは、いまのところWindowsだけで使えます。' });
+  try {
+    if (win && !win.isDestroyed()) {
+      win.focus();
+      win.webContents.focus();
+    }
+  } catch {}
+  // Windowsキー＋H を押したことにする（user32 の keybd_event）
+  const script =
+    "$sig='[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo);';" +
+    '$k=Add-Type -MemberDefinition $sig -Name KbdEvt -Namespace KawariniKaigi -PassThru;' +
+    '$z=[System.UIntPtr]::Zero;' +
+    '$k::keybd_event(0x5B,0,0,$z);$k::keybd_event(0x48,0,0,$z);Start-Sleep -Milliseconds 60;$k::keybd_event(0x48,0,2,$z);$k::keybd_event(0x5B,0,2,$z)';
+  return new Promise((resolve) => {
+    try {
+      // 引用符の受け渡しで崩れないように、命令は符号化して渡す
+      require('child_process').execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 15000 }, (err) => {
+        resolve(err ? { ok: false, msg: '音声入力を自動で起動できませんでした。' + manual } : { ok: true });
+      });
+    } catch (e) {
+      resolve({ ok: false, msg: '音声入力を自動で起動できませんでした。' + manual });
+    }
+  });
+}
+
+// ---------- 更新の確認 ----------
+// GitHub の Releases にある最新版の番号（タグ v1.2.3）と、このアプリの番号を比べる。開く先は、決め打ちの Releases のページだけ
+const REPO = 'TAK0-wasa/ShipLab-Hackathon-2026';
+const REPO_URL = 'https://github.com/' + REPO;
+const verNum = (v) => String(v || '').replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0);
+const newerThan = (a, b) => {
+  const x = verNum(a);
+  const y = verNum(b);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+};
+async function checkUpdate() {
+  const current = app.getVersion();
+  try {
+    if (global.__mockUpdate) return global.__mockUpdate(current, newerThan);
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 8000);
+    const res = await net.fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { accept: 'application/vnd.github+json' }, signal: ctl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return { ok: false, current, msg: res.status === 404 ? '公開されている版がまだありません。' : `確認できませんでした（${res.status}）` };
+    const latest = String((await res.json()).tag_name || '').replace(/^v/i, '');
+    if (!/^\d+\.\d+\.\d+$/.test(latest)) return { ok: false, current, msg: '最新版の番号を読み取れませんでした。' };
+    return { ok: true, current, latest, newer: newerThan(latest, current), url: REPO_URL + '/releases/latest' };
+  } catch (e) {
+    return { ok: false, current, msg: '確認できませんでした（ネットワークを確かめてください）。' };
+  }
+}
+
+// このPCに保存した内容（名前、参加している会議の一覧、代理人との会話、自分のAPIキー）をすべて消して、最初の状態で起動し直す
+function wipeLocal() {
+  const dir = app.getPath('userData');
+  for (const f of fs.readdirSync(dir)) {
+    if (f === 'config.json' || /^private-.*\.json$/.test(f)) fs.rmSync(path.join(dir, f), { force: true });
+  }
+  if (!global.__noRelaunch) {
+    app.relaunch();
+    app.exit(0);
+  }
+  return true;
+}
+
 // ---------- IPC ----------
 // 設定を返す前に、会議のサーバーでAIが使えるかを確かめておく（結果は数分おぼえる）
 ipcMain.handle('config:get', async () => {
@@ -342,6 +479,10 @@ ipcMain.handle('private:save', (_e, room, data) => {
   return true;
 });
 ipcMain.handle('llm', (_e, req) => callClaude(req || {}));
+ipcMain.handle('voice:start', (e) => startDictation(BrowserWindow.fromWebContents(e.sender)));
+ipcMain.handle('update:check', () => checkUpdate());
+ipcMain.handle('app:wipe', () => wipeLocal());
+ipcMain.handle('diag:run', () => (global.__mockDiag ? global.__mockDiag() : diagnose()));
 ipcMain.handle('store:test', (_e, url, key) => testDb(url, key));
 ipcMain.handle('store:all', () => storeAll());
 // 一覧にある別の会議の状況を読む（「あなたの番」の印を付けるため。書き込みはしない）
