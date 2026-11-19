@@ -472,7 +472,7 @@
     delete S.priv.pendingBrief;
     S.edit = null;
     S.priv.choices = [];
-    S.priv.chat.push({ role: 'assistant', content: 'もう1つ、別の案も預けられます。いまの案はそのまま残します。追加したい案を、名前と一言で教えてください。話し終えたら「預ける内容を確認する」で、2つの案をまとめて預けます。' });
+    S.priv.chat.push({ role: 'assistant', content: '別の案を追加しますね。いま預けている案は、そのまま残ります。追加したい案の「名前」と「どんな案か」を、一言で教えてください。話し終えたら、右の「預ける内容を確認する」を押すと、2つの案をまとめて預け直せます。' });
     await savePriv();
     S.tab = 'room';
     render();
@@ -482,6 +482,7 @@
   function confirmDeposit() {
     run('meeting', async () => {
       const brief = { ...S.priv.pendingBrief, updates: S.priv.pendingBrief.updates || [] };
+      if (S.priv.brief) brief.editedAt = Date.now(); // 預け直し（案を足した）の印。会議が終わったあと、新しい案を入れて自動でやり直す合図
       await api.store.put('brief', S.cfg.memberId, brief);
       await api.store.put('member', S.cfg.memberId, { ...(S.snap.member[S.cfg.memberId] || {}), name: S.cfg.name, deposited: true, depositedAt: Date.now() });
       S.priv.brief = brief;
@@ -490,7 +491,11 @@
       await refresh();
       const deposited = Object.keys(S.snap.brief).filter((id) => S.snap.member[id]).length;
       const hadMeeting = Object.keys(S.snap.cand).length > 0;
-      if (!canAI()) {
+      if (isRunning()) {
+        // 会議のまっ最中。いまの会議は、始めるときにそろっていた案で進む。新しい案は、会議が終わってから入れて、自動でやり直す
+        S.tab = 'meeting';
+        S.notice = '預けました。いまの会議が終わったあと、新しい案を入れて、自動でやり直します。';
+      } else if (!canAI()) {
         S.tab = 'meeting';
         S.notice = `預けました（いま ${deposited} / ${S.teamSize} 人）。全員が預けると、代表者のアプリが開いているときに会議が進みます。`;
       } else if (deposited >= 2 && (deposited >= S.teamSize || hadMeeting)) {
@@ -1048,7 +1053,7 @@
             'div',
             { class: 'row end' },
             h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: () => { delete S.priv.pendingBrief; savePriv(); render(); } }, 'やめる'),
-            h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: addIdea }, '別の案も足す'),
+            h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: addIdea }, '＋ 別の案を追加する'),
             h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: () => openEdit('pending') }, '手直しする'),
             h('button', { class: 'btn', disabled: !!S.busy, onclick: confirmDeposit }, 'この内容で預ける')
           )
@@ -1063,12 +1068,20 @@
           { class: 'card' },
           h('div', { class: 'row', style: 'align-items:center' }, h('h2', { style: 'margin:0;flex:1' }, '代理人に預け済み'), state().phase === 'decided' ? null : h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => openEdit('saved') }, '手直しする')),
           briefView(S.priv.brief),
+          state().phase === 'decided' || !canAI()
+            ? null
+            : h(
+                'div',
+                { class: 'addidea' },
+                h('b', {}, '別の案も出したいとき'),
+                h('div', { class: 'hint' }, 'いま預けている案は、そのまま残ります。新しい案を代理人に話して、2つ（以上）の案をまとめて預け直せます。' + (isRunning() ? 'いまは会議中です。預けると、この会議が終わったあと、新しい案を入れて自動でやり直します。' : '')),
+                h('button', { class: 'btn', disabled: !!S.busy, onclick: addIdea }, '＋ 別の案を追加する')
+              ),
           h('label', {}, 'やっぱりこう思う（代理人に追加で伝える）'),
           draftArea('tell', { placeholder: '例：実装が間に合うなら、Bさんの案でもいいと思ってきた' }),
           h(
             'div',
             { class: 'row end' },
-            canAI() ? h('button', { class: 'btn small', disabled: !!S.busy, onclick: addIdea }, '別の案も預ける') : null,
             canAI() ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: makeBrief }, '会話から作り直して預け直す') : h('span', { class: 'hint' }, '案そのものを変えるときは、上の「手直しする」か、左のフォームを直して「内容を確認する」を押してください。'),
             h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => tellAgent('tell') }, '伝えて議論をやり直す')
           )
@@ -2599,7 +2612,8 @@
       const last = st.lastRunAt || 0;
       const pending = ids.some((id) => (snap.brief[id].updates || []).some((u) => u.at > last) && !Object.values(snap.question).some((q) => q.memberId === id && q.status === 'open'));
       if (pending) mode = 'rerun';
-      if (ids.some((id) => (snap.brief[id].editedAt || 0) > last)) mode = 'full'; // 案を手直しして預け直した人がいる
+      const since = st.runStartedAt && st.runStartedAt <= last ? st.runStartedAt : last; // 会議の最中に預け直した分も拾う
+      if (ids.some((id) => (snap.brief[id].editedAt || 0) > since)) mode = 'full'; // 案を手直しして預け直した人がいる
       // 会議のあとで預けた人がいる（締切で先に始めた場合など）→ その人を入れて最初からやり直す
       if ((st.participants || []).length && ids.some((id) => !st.participants.includes(id))) { mode = 'full'; late = true; }
     }

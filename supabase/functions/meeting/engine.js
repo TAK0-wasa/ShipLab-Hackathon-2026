@@ -1116,7 +1116,8 @@
     if (st.phase === 'review') {
       const last = st.lastRunAt || 0;
       if ((st.participants || []).length && ids.some((id) => !st.participants.includes(id))) return { mode: 'full', late: true };
-      if (ids.some((id) => (snap.brief[id].editedAt || 0) > last)) return { mode: 'full' };
+      const since = st.runStartedAt && st.runStartedAt <= last ? st.runStartedAt : last; // 会議の最中に預け直した分も拾う
+      if (ids.some((id) => (snap.brief[id].editedAt || 0) > since)) return { mode: 'full' };
       const pending = ids.some((id) => (snap.brief[id].updates || []).some((u) => u.at > last) && !Object.values(snap.question).some((q) => q.memberId === id && q.status === 'open'));
       if (pending) return { mode: 'rerun' };
     }
