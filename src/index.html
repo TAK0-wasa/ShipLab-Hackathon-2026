@@ -526,8 +526,30 @@
   .chat-head.withjump .agenthead { flex: 1; min-width: 0; }
   .jumpbrief { flex: none; white-space: nowrap; }
   @media (max-width: 820px) { .chat-head.withjump { flex-wrap: wrap; } .chat-head.withjump .agenthead { flex: 1 1 100%; } .jumpbrief { margin-left: auto; } }
+  .myideas { margin: 12px 0 4px; display: flex; flex-direction: column; gap: 6px; }
+  .myidea { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+  .myidea .t { min-width: 0; overflow-wrap: anywhere; font-weight: 700; }
   .addbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 14px; border-top: 1px dashed var(--teal); background: var(--tint); }
   .addidea-card { border: 2px solid var(--teal); }
+  /* スマホ：上の帯を3段に整理する（1段目：ロゴ・会議・ベル／2段目：手順／3段目：名前・状態・設定・バージョン） */
+  @media (max-width: 820px) {
+    header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: 'logo switch bell' 'nav nav nav' 'who who who'; gap: 6px 8px; align-items: center; padding: 8px 12px; }
+    header h1.logo { grid-area: logo; margin: 0; font-size: 19px; }
+    #switch { grid-area: switch; min-width: 0; flex: none; }
+    #bell { grid-area: bell; }
+    nav { grid-area: nav; display: flex; align-items: center; width: 100%; gap: 4px; }
+    nav .stepb { flex: none; font-size: 13px; min-height: 32px; padding: 0 9px 0 5px; gap: 5px; }
+    nav .stepb .n { width: 22px; height: 22px; font-size: 12px; }
+    nav .stepline { flex: 1; width: auto; min-width: 4px; }
+    .who { grid-area: who; display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; width: 100%; white-space: nowrap; }
+    .who .whoname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
+    .who .badge { font-size: 11px; padding: 2px 8px; flex: none; }
+    .who .badge[title] { display: none; }
+    .who .btn.small { min-height: 34px; padding: 0 12px; flex: none; }
+    .who .ver { font-size: 11px; color: var(--sub); flex: none; }
+    #bellpanel { top: 50px; }
+    .prestart .who { grid-area: 1 / 2 / 2 / 3; justify-content: flex-end; width: auto; }
+  }
   @media (max-height: 760px) { header { padding-top: 4px; padding-bottom: 4px; } #status, #turn { padding-top: 3px; padding-bottom: 3px; } }
   /* スマホのヘッダーは3行にまとめ、会議本文の表示領域を確保する。 */
   @media (max-width: 820px) {

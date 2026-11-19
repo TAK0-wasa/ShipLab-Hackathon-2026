@@ -480,6 +480,15 @@
     setTimeout(() => { const b = $('chatInput'); if (b) b.focus(); }, 50);
   }
 
+  // 自分が預けた案を1つ消す（案が2つ以上あるときだけ）。消した内容で預け直し、会議が終わっていれば新しい案の並びでやり直す
+  function removeIdea(i) {
+    const b = S.priv.brief;
+    if (!b || (b.ideas || []).length < 2 || S.busy) return;
+    S.priv.pendingBrief = { ...b, ideas: b.ideas.filter((_, k) => k !== i), updates: b.updates || [] };
+    S.confirmIdea = -1;
+    confirmDeposit();
+  }
+
   function confirmDeposit() {
     run('meeting', async () => {
       const brief = { ...S.priv.pendingBrief, updates: S.priv.pendingBrief.updates || [] };
@@ -1098,12 +1107,31 @@
           { class: 'card', id: 'sec-brief' },
           h('div', { class: 'row', style: 'align-items:center' }, h('h2', { style: 'margin:0;flex:1' }, '代理人に預け済み'), state().phase === 'decided' ? null : h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => openEdit('saved') }, '手直しする')),
           briefView(S.priv.brief),
+          state().phase === 'decided'
+            ? null
+            : (S.priv.brief.ideas || []).length > 1
+            ? h(
+                'div',
+                { class: 'myideas' },
+                h('b', {}, '預けた案（自分の案だけ消せます）'),
+                (S.priv.brief.ideas || []).map((idea, i) =>
+                  h(
+                    'div',
+                    { class: 'myidea' },
+                    h('span', { class: 't' }, idea.title || '（名前なし）'),
+                    S.confirmIdea === i
+                      ? h('span', { class: 'row', style: 'gap:6px;flex:none' }, h('button', { class: 'btn small danger', disabled: !!S.busy, onclick: () => removeIdea(i) }, '本当に消す'), h('button', { class: 'btn ghost small', onclick: () => { S.confirmIdea = -1; render(); } }, 'やめる'))
+                      : h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { S.confirmIdea = i; render(); } }, 'この案を消す')
+                  )
+                )
+              )
+            : h('div', { class: 'hint', style: 'margin-top:8px' }, '案が1つだけのときは、消せません。中身を変えたいときは、「手直しする」を使ってください。'),
           h('label', {}, 'やっぱりこう思う（代理人に追加で伝える）'),
           draftArea('tell', { placeholder: '例：実装が間に合うなら、Bさんの案でもいいと思ってきた' }),
           h(
             'div',
             { class: 'row end' },
-            canAI() ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: makeBrief }, '会話から作り直して預け直す') : h('span', { class: 'hint' }, '案そのものを変えるときは、上の「手直しする」か、左のフォームを直して「内容を確認する」を押してください。'),
+            canAI() ? null : h('span', { class: 'hint' }, '案そのものを変えるときは、上の「手直しする」か、左のフォームを直して「内容を確認する」を押してください。'),
             h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => tellAgent('tell') }, '伝えて議論をやり直す')
           )
           ,
@@ -2575,6 +2603,8 @@
     const onTab = S.startMode ? 'settings' : S.tab;
     const stepBtn = (id, n, label, done) =>
       h('button', { class: 'stepb' + (onTab === id ? ' on' : '') + (done ? ' done' : ''), 'aria-current': onTab === id ? 'step' : null, disabled: !ready(), onclick: () => { S.tab = id; S.startMode = ''; render(); } }, h('span', { class: 'n' }, done && onTab !== id ? '✓' : String(n)), h('span', {}, label), id === 'meeting' && qn ? h('span', { class: 'dot' }, qn) : null);
+    $('nav').style.display = ready() ? '' : 'none'; // 会議に入る前は、手順の帯を出さない
+    document.body.classList.toggle('prestart', !ready());
     $('nav').replaceChildren(
       stepBtn('room', 1, '考えを預ける', deposited),
       h('span', { class: 'stepline' }),
