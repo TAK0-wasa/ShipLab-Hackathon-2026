@@ -24,7 +24,7 @@ fs.writeFileSync(path.join(tmp, 'ai-dairinin-kaigi-shared', 'smoke.json'), JSON.
   'member/m-aaa01': { name: 'あおい', deposited: true },
   'member/m-bbb01': { name: 'けんた', deposited: true },
   'brief/m-aaa01': brief('講義メモ自動停止', '講義動画で勉強する学生', '入力中は動画を自動で止める', '実装が重いと間に合わない'),
-  'brief/m-bbb01': brief('レシート割り勘', '飲み会の幹事', 'レシート撮影で各自の金額を出す', '既存アプリと差が出にくい'),
+  'brief/m-bbb01': brief('レシート割り勘', '飲み会の代表者', 'レシート撮影で各自の金額を出す', '既存アプリと差が出にくい'),
 }));
 
 global.__mockLlm = async ({ system, messages }) => {

@@ -99,7 +99,7 @@ app.whenReady().then(async () => {
   try {
     await win.loadFile(path.join(page, 'index.html'), { query: { db: 'none' } });
     await sleep(600);
-    // 会議に参加した状態を作る（接続先は手元のサーバー）。幹事を含めて3人、うち2人はすでに預けている
+    // 会議に参加した状態を作る（接続先は手元のサーバー）。代表者を含めて3人、うち2人はすでに預けている
     const room = 'SRVTEST1';
     rows.set(`${room}|room|main`, { theme: 'かゆいところに手が届くアプリ', criteria: 'テーマに合っているか\n新しさ ×2', teamSize: 3, leaderId: 'someone-else' });
     const brief = (t) => Engine.normalizeBrief({ ideas: [{ title: t, summary: t + 'の説明', target: { text: '学生', by: 'me' }, problem: { text: '', by: 'ai' }, feature: '目玉', push: 'push' }], likes: '好き', worries: '不安', mustHaves: ['動くこと'] });
@@ -112,7 +112,7 @@ app.whenReady().then(async () => {
     await until(async () => js(`window.api.getConfig().then((c) => c.serverMeeting === true && c.serverAi === false)`), '関数「meeting」が使えることを見分けられない', 10000);
     await until(async () => (await js(`(document.querySelector('#who') || {}).innerText || ''`)).includes('りょうま'), '会議に入れない', 10000);
     if (stats.kicks) throw new Error('全員が預ける前に、会議を始める合図を送っている');
-    // 自分（幹事ではないメンバー）が預ける → 画面はAIを呼べないが、合図だけでサーバーが会議を最後まで進める
+    // 自分（代表者ではないメンバー）が預ける → 画面はAIを呼べないが、合図だけでサーバーが会議を最後まで進める
     const me = await js(`window.api.getConfig().then((c) => c.memberId)`);
     await js(`(async () => { await api.store.put('brief', ${JSON.stringify(me)}, ${JSON.stringify(brief('集まらなくても決まるアプリ'))}); await api.store.put('member', ${JSON.stringify(me)}, { name: 'りょうま', deposited: true }); })()`);
     await until(async () => state(room).phase === 'review', 'サーバーが会議を進めない: ' + JSON.stringify([stats, state(room).phase, state(room).error]), 60000);

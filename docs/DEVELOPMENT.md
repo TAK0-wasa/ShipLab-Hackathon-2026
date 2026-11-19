@@ -52,7 +52,7 @@ npx vercel --prod
 
 ## 会議をサーバーで進める（任意）
 
-Web版は、Supabase に関数「meeting」が入っていると自動で見分けて、会議をサーバーに任せます。画面は「進めてください」と合図を送るだけなので、預けたあとにページを閉じても会議は進みます。入っていなければ、これまでどおり画面側で進めます（合図から90秒たっても始まらないときも、幹事の画面が引き取ります）。
+Web版は、Supabase に関数「meeting」が入っていると自動で見分けて、会議をサーバーに任せます。画面は「進めてください」と合図を送るだけなので、預けたあとにページを閉じても会議は進みます。入っていなければ、これまでどおり画面側で進めます（合図から90秒たっても始まらないときも、代表者の画面が引き取ります）。
 
 1. `node supabase/build.js` を実行します（`supabase/functions/meeting/engine.js` に `src/engine.js` の写しができます）。
 2. Supabase の Edge Functions で「meeting」を作り、`supabase/functions/meeting/` の3つのファイル（`index.ts`・`core.mjs`・`engine.js`）を入れます。「Verify JWT」は切ります。

@@ -51,7 +51,7 @@ app.whenReady().then(async () => {
     await until(async () => !!(await js(`!!document.querySelector('#updbtn')`)), '新しい版のお知らせが出ない', 8000);
 
     // 1. 会議を作って、自分の分を預ける
-    await click('幹事として始める'); await sleep(300);
+    await click('代表者として始める'); await sleep(300);
     await type('#c-name', 'りょうま');
     await type('#c-theme', 'かゆいところに手が届くアプリ');
     await type('#c-criteria', 'テーマに合っているか\n新しさがあるか ×2');
@@ -59,7 +59,7 @@ app.whenReady().then(async () => {
     await click('会議を作る'); await sleep(1200);
     if (await js(`document.querySelector('#s-tools').open`)) throw new Error('困ったときが最初から開いている');
     if ((await text('#view')).includes('サンプルで埋める') || (await text('#view')).includes('預ける前に戻す')) throw new Error('デモ用の機能が残っている');
-    await need('#sec-leader', ['幹事の操作', 'まだほかのメンバーは参加していません', 'この会議のデータをすべて削除する'], '幹事の操作');
+    await need('#sec-leader', ['代表者の操作', 'まだほかのメンバーは参加していません', 'この会議のデータをすべて削除する'], '代表者の操作');
     await need('#sec-about', ['このアプリについて', '更新を確認する', '不具合を報告する', 'このPCのデータを消す'], 'このアプリについて');
     await click('更新を確認する'); await idle(); await sleep(300);
     await need('#upd', ['新しい版 v99.0.0 があります'], '更新の確認');
@@ -120,7 +120,7 @@ app.whenReady().then(async () => {
     if (!JSON.stringify(all).includes('止まったところから、会議を再開します')) throw new Error('再開したことが発言の記録に出ていない');
     if (all.filter((d) => d.kind === 'call' && d.data.task === 'round1').length !== 3) throw new Error('再開で、1回目の発言をやり直している');
 
-    // 4. 全員が承認して決定 → 幹事が決定を取り消す → 承認待ちに戻る
+    // 4. 全員が承認して決定 → 代表者が決定を取り消す → 承認待ちに戻る
     await js(`(async () => { const st = (await api.store.all()).find((d) => d.kind === 'state').data; for (const id of ['m-aoi', 'm-kenta']) await api.store.put('approval', id, { round: st.round, ok: true, at: Date.now(), candId: st.recommendation.topId }); })()`);
     await sleep(4500);
     await click('この案を承認する'); await sleep(1500);

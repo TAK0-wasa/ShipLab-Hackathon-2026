@@ -253,7 +253,7 @@
     if (window.__mockLlm) return window.__mockLlm({ system, messages, maxTokens, search }); // テスト専用
     const cfg = loadConfig();
     if (cfg.demo) return sampleAi({ system, messages }); // 見本モード: AIを呼ばない
-    if (!(await probeServer(cfg))) throw new Error('AIのサーバーが未設定です（この会議ではAIを使えません。幹事に確かめてください）');
+    if (!(await probeServer(cfg))) throw new Error('AIのサーバーが未設定です（この会議ではAIを使えません。代表者に確かめてください）');
     let useSearch = !!search && cfg.webSearch !== false;
     const post = async (msgs) => {
       const body = { model: cfg.model || DEFAULT_MODEL, max_tokens: maxTokens || 2000, system, messages: msgs, room: cfg.room };
@@ -322,7 +322,7 @@
       }
       await step('AIのサーバー', async () => {
         const res = await limit(net(serverUrl(cfg), { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify({ ping: true }) }), 12000);
-        if (res.status === 404) return { ok: false, detail: 'この会議のサーバーには、AIの中継（関数 claude）がありません', hint: '幹事に、Supabase に関数「claude」を公開してもらってください。' };
+        if (res.status === 404) return { ok: false, detail: 'この会議のサーバーには、AIの中継（関数 claude）がありません', hint: '代表者に、Supabase に関数「claude」を公開してもらってください。' };
         const data = res.ok ? await res.json() : null;
         if (!data || !data.ok) return { ok: false, detail: `応答がおかしいです（${res.status}）`, hint: dbHint };
         if (!data.ready) return { ok: false, detail: 'サーバーにClaudeのAPIキーが登録されていません', hint: 'Supabase の Edge Functions → Secrets に ANTHROPIC_API_KEY を登録してください。' };

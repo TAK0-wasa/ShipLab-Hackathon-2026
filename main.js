@@ -97,7 +97,7 @@ function saveConfig(patch) {
   writeJson(userFile('config.json'), out);
   return publicConfig(loadConfig());
 }
-// 幹事用: このフォルダに shared-db.local.json（{"url":"…","key":"…"}）があれば、
+// 代表者用: このフォルダに shared-db.local.json（{"url":"…","key":"…"}）があれば、
 // 「会議を作る」の共有データベース欄にあらかじめ入れておく（メンバーは招待コードで受け取るので不要）
 // 探す場所: 設定の保存先フォルダ → （インストールしたアプリなら）アプリの .exe と同じフォルダ → 開発用のこのフォルダ
 function localFile(name) {

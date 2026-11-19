@@ -33,17 +33,17 @@ app.whenReady().then(async () => {
     // 1. はじめの画面。Web版の土台（window.api）で動いていて、デスクトップ専用のものは出ない
     if (!(await js(`window.WEB === true && !!window.api && !window.api.voiceStart && !window.api.checkUpdate`))) throw new Error('Web版の土台が入っていない');
     await need('#view', ['会議を作る', '招待コードで参加する', '代理人', '預ける'], 'はじめの画面');
-    await click('幹事として始める'); await sleep(300);
+    await click('代表者として始める'); await sleep(300);
     await type('#c-name', 'りょうま');
     await type('#c-theme', 'かゆいところに手が届くアプリ');
     await click('ハッカソン・コンテスト');
     await js(`window.api.saveConfig({ demo: true }).then(() => true)`);
     await click('会議を作る'); await sleep(1200);
-    await need('#view', ['招待コード', '幹事： りょうま', '見本モード', 'この端末'], '作成後の設定画面');
+    await need('#view', ['招待コード', '代表者： りょうま', '見本モード', 'この端末'], '作成後の設定画面');
     if ((await text('#view')).includes('このPC')) throw new Error('「このPC」という言い方が残っている');
     if (await js(`!!document.querySelector('#s-key')`)) throw new Error('Web版にAPIキーの入力欄が出ている');
     if ((await text('#sec-about')).includes('更新を確認する')) throw new Error('Web版に「更新を確認する」が出ている');
-    await need('#who', ['りょうま（幹事）', '見本モード', 'v' + require('../package.json').version], 'ヘッダー');
+    await need('#who', ['りょうま（代表者）', '見本モード', 'v' + require('../package.json').version], 'ヘッダー');
     await shot('w1-settings');
     // 招待の文は、開くだけでコードが入るリンクつき
     await js(`Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.__copied = t; } }, configurable: true }); true`);
@@ -78,7 +78,7 @@ app.whenReady().then(async () => {
     // 4. 開き直しても続きから使える（設定と会議はこのブラウザに残る）
     await win.loadFile(path.join(__dirname, '..', 'web', 'index.html'), { query: { db: 'none' } });
     await sleep(1500);
-    await need('#who', ['りょうま（幹事）'], '開き直したあとのヘッダー');
+    await need('#who', ['りょうま（代表者）'], '開き直したあとのヘッダー');
     await nav(1); await sleep(500);
     await need('#view', ['推薦案（第1回の議論）'], '開き直したあとの結果');
 

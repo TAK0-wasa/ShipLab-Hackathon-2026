@@ -1,4 +1,4 @@
-// MeetForMe Web版 v0.38.4（node web/build.js で作成。直接は書き換えない）
+// MeetForMe Web版 v0.38.8（node web/build.js で作成。直接は書き換えない）
 (function () { var module = { exports: {} };
 // 見本モード用の「AIの代わり」。APIを呼ばずに、決まった形の見本の応答を返す。
 // 画面の流れ（個室 → 預ける → 会議 → 採点 → 推薦 → 承認）を、費用をかけずに確かめるためのもの。
@@ -153,7 +153,7 @@ window.sampleAi = module.exports; })();
 // ・AIは会議のサーバー（Supabase の Edge Function「claude」）経由だけで使う。ClaudeのAPIキーはブラウザに置かない
 /* global sampleAi */
 (function () {
-  const VERSION = '0.38.4';
+  const VERSION = '0.38.8';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const REPO_URL = 'https://github.com/TAK0-wasa/ShipLab-Hackathon-2026';
   // デスクトップ版と同じ接続先（公開してよい種類のキー）。会議の中身は、会議の番号を知っている人しか読み書きできない（supabase_setup.sql）
@@ -401,7 +401,7 @@ window.sampleAi = module.exports; })();
     if (window.__mockLlm) return window.__mockLlm({ system, messages, maxTokens, search }); // テスト専用
     const cfg = loadConfig();
     if (cfg.demo) return sampleAi({ system, messages }); // 見本モード: AIを呼ばない
-    if (!(await probeServer(cfg))) throw new Error('AIのサーバーが未設定です（この会議ではAIを使えません。幹事に確かめてください）');
+    if (!(await probeServer(cfg))) throw new Error('AIのサーバーが未設定です（この会議ではAIを使えません。代表者に確かめてください）');
     let useSearch = !!search && cfg.webSearch !== false;
     const post = async (msgs) => {
       const body = { model: cfg.model || DEFAULT_MODEL, max_tokens: maxTokens || 2000, system, messages: msgs, room: cfg.room };
@@ -470,7 +470,7 @@ window.sampleAi = module.exports; })();
       }
       await step('AIのサーバー', async () => {
         const res = await limit(net(serverUrl(cfg), { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify({ ping: true }) }), 12000);
-        if (res.status === 404) return { ok: false, detail: 'この会議のサーバーには、AIの中継（関数 claude）がありません', hint: '幹事に、Supabase に関数「claude」を公開してもらってください。' };
+        if (res.status === 404) return { ok: false, detail: 'この会議のサーバーには、AIの中継（関数 claude）がありません', hint: '代表者に、Supabase に関数「claude」を公開してもらってください。' };
         const data = res.ok ? await res.json() : null;
         if (!data || !data.ok) return { ok: false, detail: `応答がおかしいです（${res.status}）`, hint: dbHint };
         if (!data.ready) return { ok: false, detail: 'サーバーにClaudeのAPIキーが登録されていません', hint: 'Supabase の Edge Functions → Secrets に ANTHROPIC_API_KEY を登録してください。' };
@@ -1833,7 +1833,7 @@ window.sampleAi = module.exports; })();
     },
   });
   const ready = () => !!(S.cfg.name && S.cfg.room && S.cfg.memberId);
-  // AIを呼べるか（APIキーがある、または見本モード）。呼べない人はフォームで預け、会議は幹事のアプリが進める
+  // AIを呼べるか（APIキーがある、または見本モード）。呼べない人はフォームで預け、会議は代表者のアプリが進める
   const canAI = () => !!(S.cfg.hasApiKey || S.cfg.demo || S.cfg.serverAi);
   const roomInfo = () => (S.snap && S.snap.room && S.snap.room.main) || {};
   const isLeader = () => !roomInfo().leaderId || roomInfo().leaderId === S.cfg.memberId;
@@ -1879,7 +1879,7 @@ window.sampleAi = module.exports; })();
     const name = (id) => (snap.member[id] || {}).name || '?';
     if (isRunning()) return '代理人どうしが会議中です。';
     if (st.phase === 'decided') return snap.cand[st.decidedCandId] ? `「${snap.cand[st.decidedCandId].title}」に決まりました。` : '';
-    if (st.error) return canAI() ? '会議が途中で止まっています。「② 会議と結果」の「続きから再開する」で進められます。' : '会議が途中で止まっています。幹事が再開するのを待っています。';
+    if (st.error) return canAI() ? '会議が途中で止まっています。「② 会議と結果」の「続きから再開する」で進められます。' : '会議が途中で止まっています。代表者が再開するのを待っています。';
     if (st.phase === 'review') {
       const parts = st.participants || [];
       const wait = parts.filter((id) => !(snap.approval[id] && snap.approval[id].ok && snap.approval[id].round === st.round));
@@ -2180,6 +2180,9 @@ window.sampleAi = module.exports; })();
     if (!Array.isArray(S.priv.chat) || !S.priv.chat.length) S.priv.chat = [{ role: 'assistant', content: GREETING(S.cfg.name) }];
     await refresh();
     if (S.netError) return;
+    // 代表者に外された人は、メンバーの一覧に自分を入れ直さない（入り直すときは、招待コードで参加する）
+    const rm0 = S.snap.room && S.snap.room.main;
+    if (rm0 && (rm0.removed || []).includes(S.cfg.memberId)) return;
     const cur = S.snap.member[S.cfg.memberId];
     if (!cur || cur.name !== S.cfg.name) {
       await api.store.put('member', S.cfg.memberId, { joinedAt: Date.now(), ...(cur || {}), name: S.cfg.name });
@@ -2265,7 +2268,7 @@ window.sampleAi = module.exports; })();
       const hadMeeting = Object.keys(S.snap.cand).length > 0;
       if (!canAI()) {
         S.tab = 'meeting';
-        S.notice = `預けました（いま ${deposited} / ${S.teamSize} 人）。全員が預けると、幹事のアプリが開いているときに会議が進みます。`;
+        S.notice = `預けました（いま ${deposited} / ${S.teamSize} 人）。全員が預けると、代表者のアプリが開いているときに会議が進みます。`;
       } else if (deposited >= 2 && (deposited >= S.teamSize || hadMeeting)) {
         S.tab = 'meeting';
         render();
@@ -2295,7 +2298,7 @@ window.sampleAi = module.exports; })();
     run('answer', async () => {
       left = await Engine.answerQuestion(ctx(), q.id, text);
       delete S.drafts[key];
-      if (left === 0 && !canAI()) S.notice = '答えを代理人に伝えました。幹事のアプリが開いているときに、議論をやり直します。';
+      if (left === 0 && !canAI()) S.notice = '答えを代理人に伝えました。代表者のアプリが開いているときに、議論をやり直します。';
     }).then(() => {
       if (left === 0 && canAI()) {
         S.tab = 'meeting';
@@ -2332,7 +2335,7 @@ window.sampleAi = module.exports; })();
         S.tab = 'meeting';
         await Engine.runMeeting(ctx(), { mode: 'rerun' });
       } else {
-        S.notice = '「' + c.title + '」にしたいと伝えました。幹事のアプリが開いているときに、議論をやり直します。';
+        S.notice = '「' + c.title + '」にしたいと伝えました。代表者のアプリが開いているときに、議論をやり直します。';
       }
     });
   }
@@ -2347,7 +2350,7 @@ window.sampleAi = module.exports; })();
         S.tab = 'meeting';
         await Engine.runMeeting(ctx(), { mode: 'rerun' });
       } else {
-        S.notice = Object.keys(S.snap.cand).length ? '代理人に伝えました。幹事のアプリが開いているときに、議論をやり直します。' : '代理人に伝えました。';
+        S.notice = Object.keys(S.snap.cand).length ? '代理人に伝えました。代表者のアプリが開いているときに、議論をやり直します。' : '代理人に伝えました。';
       }
     });
   }
@@ -2460,7 +2463,7 @@ window.sampleAi = module.exports; })();
       S.notice = '変更はありませんでした。';
       return render();
     }
-    if (ed.src === 'saved') next.editedAt = Date.now(); // 預け直しの印（幹事のアプリが議論をやり直す合図）
+    if (ed.src === 'saved') next.editedAt = Date.now(); // 預け直しの印（代表者のアプリが議論をやり直す合図）
     else if (base.editedAt) next.editedAt = base.editedAt;
     S.priv.pendingBrief = next;
     S.notice = ed.src === 'saved' ? '手直しした内容です。「この内容で預ける」を押すと、預け直します。' : '';
@@ -2683,12 +2686,12 @@ window.sampleAi = module.exports; })();
       { class: 'rule' },
       h('summary', {}, '点の決め方と、この重みにしている理由'),
       h('ul', { class: 'plain' },
-        h('li', {}, h('b', {}, '評価基準への合い方 70点： '), '幹事が決めた基準に合うかを、進行役AIが案の中身だけを見て採点します（誰の案かは知らせません）。審査や目的に合う案を選ぶ会議なので、こちらを主にしています。'),
+        h('li', {}, h('b', {}, '評価基準への合い方 70点： '), '代表者が決めた基準に合うかを、進行役AIが案の中身だけを見て採点します（誰の案かは知らせません）。審査や目的に合う案を選ぶ会議なので、こちらを主にしています。'),
         h('li', {}, h('b', {}, 'メンバーの支持 30点： '), '基準の点が高くても、作る本人たちが乗り気でない案は進みません。そのための歯止めとして3割を充てています。'),
         h('li', {}, h('b', {}, '代理人の推測は重み半分： '), '本人が言っていないことを代理人が推し量った評価は、本人の言葉より軽く扱います。推測だけで案が落ちないよう、低い推測が付いたときは本人に確かめます。'),
         h('li', {}, h('b', {}, '本人が「嫌」と言った案は対象外： '), '点数で押し切らないためです。')
       ),
-      h('div', { class: 'hint' }, 'この配分は、このアプリが決めた目安です。基準ごとの重みは、幹事が「新しさ ×2」のように変えられます。')
+      h('div', { class: 'hint' }, 'この配分は、このアプリが決めた目安です。基準ごとの重みは、代表者が「新しさ ×2」のように変えられます。')
     );
   }
   // 理由の最初の1文だけを取り出す
@@ -2779,7 +2782,11 @@ window.sampleAi = module.exports; })();
                   if (again) again.focus();
                 },
               },
-              h('span', { class: 'mic-ic' }, '🎤'),
+              (() => {
+                const ic = h('span', { class: 'mic-ic' });
+                ic.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21"/></svg>';
+                return ic;
+              })(),
               '声で入力'
             )
           : null,
@@ -2966,7 +2973,7 @@ window.sampleAi = module.exports; })();
           : h('div', { class: 'hint' }, 'まだ設定されていません。テーマと評価基準を入れると、代理人と進行役AIがそれに沿って案を評価します。'),
         isLeader()
           ? h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { S.editTopic = true; S.drafts['t:theme'] = r.theme || ''; S.drafts['t:criteria'] = r.criteria || ''; S.drafts['t:conditions'] = r.conditions || ''; S.drafts['t:deadline'] = toLocalInput(r.deadlineAt); render(); } }, set ? '編集する' : '設定する'))
-          : h('div', { class: 'hint', style: 'margin-top:6px' }, 'お題と評価基準は、幹事が設定します。')
+          : h('div', { class: 'hint', style: 'margin-top:6px' }, 'お題と評価基準は、代表者が設定します。')
       );
     }
     const save = () =>
@@ -3321,7 +3328,7 @@ window.sampleAi = module.exports; })();
       h('div', { class: 'whead' }, h('span', { class: 'wcheck' }, '✓'), h('div', {}, h('h2', { style: 'margin:0' }, 'あなたの考えを預かりました'), h('div', { class: 'hint' }, all ? '全員がそろいました。まもなく会議が始まります。' : `あと${yet.length + notJoined}人が預けると、代理人どうしの会議が自動で始まります。`))),
       h('div', { class: 'wsteps' }, steps.map((t, i) => h('span', { class: 'wstep' + (i < stepNow ? ' done' : i === stepNow ? ' now' : '') }, (i < stepNow ? '✓ ' : `${i + 1}. `) + t))),
       h('div', { class: 'wpeople' }, done.map((m) => person(m, true)), yet.map((m) => person(m, false)), Array.from({ length: notJoined }, () => h('div', { class: 'wp' }, h('span', { class: 'av none' }, '?'), h('span', { class: 'nm' }, 'まだ参加していない人'), h('span', { class: 'st' }, '招待待ち')))),
-      dl && !all ? h('div', { class: 'wdead' }, h('b', {}, `預ける締切：${fmtDeadline(dl)}`), `（${fmtLeft(dl - Date.now())}）`, h('span', {}, dl > Date.now() ? '締切になると、預けた人だけで会議を始めます。' : '幹事のアプリが開いていれば、預けた人だけでまもなく始まります。')) : !all && isLeader() ? h('div', { class: 'hint' }, '待ちが長くなりそうなら、「② 会議と結果」の「お題と評価基準」で預ける締切を決められます。') : null,
+      dl && !all ? h('div', { class: 'wdead' }, h('b', {}, `預ける締切：${fmtDeadline(dl)}`), `（${fmtLeft(dl - Date.now())}）`, h('span', {}, dl > Date.now() ? '締切になると、預けた人だけで会議を始めます。' : '代表者のアプリが開いていれば、預けた人だけでまもなく始まります。')) : !all && isLeader() ? h('div', { class: 'hint' }, '待ちが長くなりそうなら、「② 会議と結果」の「お題と評価基準」で預ける締切を決められます。') : null,
       protoWaitHelp(yet),
       window.WEB && window.Notification && Notification.permission === 'default' ? h('div', { class: 'row', style: 'margin:8px 0' }, h('button', { class: 'btn ghost small', onclick: () => { try { Notification.requestPermission().then(() => render()); } catch (e) {} } }, '自分の番が来たら通知を受け取る'), h('span', { class: 'hint' }, 'このページを開いている間だけ届きます。')) : null,
       window.PROTO && yet.length ? null : h('div', { class: 'wlive' }, h('span', { class: 'pulse' }), 'ほかの人の状況を数秒ごとに自動で確認しています。この画面のまま待っていて大丈夫です。'),
@@ -3334,7 +3341,7 @@ window.sampleAi = module.exports; })();
           { class: 'plain' },
           h('li', {}, '会議が始まると、この画面に代理人どうしのやり取りが流れます。あなたの番が来たら、画面上部の帯' + (canNotify() && !window.PROTO ? 'と通知' : '') + 'でお知らせします。'),
           h('li', {}, '預けた内容は、会議が始まる前ならいつでも直せます。'),
-          notJoined ? h('li', {}, isLeader() ? `まだ参加していない人が${notJoined}人います。「設定・招待」の招待コードを送ってください。` : `まだ参加していない人が${notJoined}人います。幹事が招待コードを送るのを待っています。`) : null
+          notJoined ? h('li', {}, isLeader() ? `まだ参加していない人が${notJoined}人います。「設定・招待」の招待コードを送ってください。` : `まだ参加していない人が${notJoined}人います。代表者が招待コードを送るのを待っています。`) : null
         )
       ),
       h(
@@ -3355,19 +3362,19 @@ window.sampleAi = module.exports; })();
       h('li', {}, h('b', {}, '共有されるもの：'), '会議に必要な内容（案、預けた考え、代理人の発言、採点、決定）は、共有の保存先（Supabase）に置かれます。招待コードを知っている人は読めるので、招待コードはメンバー以外に渡さないでください。'),
       h('li', {}, h('b', {}, '決まったら消えるもの：'), '全員が承認して決定すると、預けた本音（好きな点・不安な点・外したくない条件・実装でできること）と、代理人からの確認のやり取りは、共有の保存先から自動で消えます。残るのは、会議で公開された案・発言・採点・決定だけです。'),
       h('li', {}, h('b', {}, 'この端末だけに残るもの：'), '代理人との会話そのものと、名前などの設定は、この端末にだけ保存されます。'),
-      h('li', {}, h('b', {}, '消し方：'), '幹事は「設定・招待」から、会議のデータをすべて削除できます。この端末に残った内容は「この端末のデータを消す」で消せます。'),
+      h('li', {}, h('b', {}, '消し方：'), '代表者は「設定・招待」から、会議のデータをすべて削除できます。この端末に残った内容は「この端末のデータを消す」で消せます。'),
       h('li', {}, h('b', {}, '入れないでほしいもの：'), 'パスワード、クレジットカード番号、他人の個人情報などは入力しないでください。')
     );
   }
 
-  // 幹事: 決定を取り消して、話し合い（承認待ち）に戻す
+  // 代表者: 決定を取り消して、話し合い（承認待ち）に戻す
   function reopen() {
     run('approve', async () => {
       const st = state();
       if (st.phase !== 'decided') return;
       for (const id of Object.keys(S.snap.approval)) await api.store.del('approval', id);
       await api.store.put('state', 'main', { ...st, phase: 'review', decidedAt: null, decidedCandId: null });
-      await api.store.put('msg', 'g' + Date.now().toString(36), { round: st.round, at: Date.now(), speaker: 'system', speakerName: 'システム', type: 'system', text: '幹事が決定を取り消しました。もう一度、承認するか一言返してください。' });
+      await api.store.put('msg', 'g' + Date.now().toString(36), { round: st.round, at: Date.now(), speaker: 'system', speakerName: 'システム', type: 'system', text: '代表者が決定を取り消しました。もう一度、承認するか一言返してください。' });
       S.confirmReopen = false;
       S.notice = '決定を取り消しました。全員がもう一度、承認するか一言返せます。';
     });
@@ -3394,7 +3401,7 @@ window.sampleAi = module.exports; })();
             h('button', { class: 'btn' + (resumable || st.phase === 'review' ? ' ghost' : ''), disabled: !!S.busy, onclick: () => startMeeting('full') }, '最初からやり直す'),
             h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: () => { S.tab = 'settings'; S.openTools = true; render(); } }, '接続を診断する')
           )
-        : h('div', { class: 'hint', style: 'margin-top:8px' }, '幹事のアプリで「続きから再開する」を押すと進みます。')
+        : h('div', { class: 'hint', style: 'margin-top:8px' }, '代表者のアプリで「続きから再開する」を押すと進みます。')
     );
   }
 
@@ -3632,7 +3639,7 @@ window.sampleAi = module.exports; })();
           : h('div', { class: 'hint' }, 'まだ会議は始まっていません。全員が「① 考えを預ける」で考えを預けると、代理人どうしの会議が始まります。'),
         st.phase === 'review'
           ? h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', disabled: !!S.busy || running, onclick: () => startMeeting('full') }, '最初から会議をやり直す'))
-          : st.phase === 'decided' ? h('div', { class: 'hint' }, '決定したので、預けた本音は共有の保存先から消しました。やり直すときは、幹事が「決定を取り消す」を押してください（各自のアプリから自動で預け直されます）。')
+          : st.phase === 'decided' ? h('div', { class: 'hint' }, '決定したので、預けた本音は共有の保存先から消しました。やり直すときは、代表者が「決定を取り消す」を押してください（各自のアプリから自動で預け直されます）。')
           : null
       )
     );
@@ -3655,7 +3662,7 @@ window.sampleAi = module.exports; })();
       // 全角で貼られたり、ハイフンが抜けたりしていても読む
       const c = t.normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g, '');
       if (!SHORT_RE.test(c)) throw new Error('招待コードの形が違います。「K7M2-9QXD」のような8文字を入れてください（0・1・I・O は使いません）。');
-      if (!S.cfg.dbDefault) throw new Error('このアプリには会議の接続先が入っていないので、短い招待コードは使えません。幹事に長い招待コード（AIDK1.…）を送ってもらってください。');
+      if (!S.cfg.dbDefault) throw new Error('このアプリには会議の接続先が入っていないので、短い招待コードは使えません。代表者に長い招待コード（AIDK1.…）を送ってもらってください。');
       return { r: c, u: S.cfg.dbDefault.url, k: S.cfg.dbDefault.key };
     }
     try {
@@ -3669,7 +3676,7 @@ window.sampleAi = module.exports; })();
   const isShort = () => SHORT_RE.test(S.cfg.room || '') && sameDb(S.cfg.supabaseUrl, S.cfg.supabaseKey);
   const inviteCode = () => (isShort() ? showCode(S.cfg.room) : encodeInvite({ r: S.cfg.room, u: S.cfg.supabaseUrl || '', k: S.cfg.supabaseKey || '' }));
   const val = (id) => ($(id) ? $(id).value.trim() : '');
-  // 評価基準の見本（幹事が何を書けばいいか迷わないように。押すと入力欄に入り、そのあと自由に直せる）
+  // 評価基準の見本（代表者が何を書けばいいか迷わないように。押すと入力欄に入り、そのあと自由に直せる）
   const CRIT_TEMPLATES = [
     ['ハッカソン・コンテスト', 'テーマに合っているか\n新しさがあるか ×2\n完成度・実際に動くか\nプレゼンで伝わるか'],
     ['授業・発表のテーマ', '課題の条件に合っているか\n調べる材料が手に入るか\n期間内にまとめきれるか\n聞く人が興味を持てるか'],
@@ -3754,6 +3761,14 @@ window.sampleAi = module.exports; })();
     const prev = S.cfg.room;
     S.cfg = await api.saveConfig(patch);
     resetView();
+    // 代表者に外されたことがある人が、招待コードで入り直すとき：「外した人」の印を消して、人数を1人戻す
+    try {
+      const snap0 = await Engine.snapshot(api.store);
+      const r0 = snap0.room && snap0.room.main;
+      if (r0 && (r0.removed || []).includes(S.cfg.memberId)) {
+        await api.store.put('room', 'main', { ...r0, removed: r0.removed.filter((x) => x !== S.cfg.memberId), teamSize: Math.min(12, (r0.teamSize || S.teamSize) + 1) });
+      }
+    } catch (e) {}
     await enterRoom();
     const missing = !S.netError && !(S.snap.room && S.snap.room.main);
     if (S.netError || missing) {
@@ -3762,7 +3777,7 @@ window.sampleAi = module.exports; })();
       S.cfg = await api.saveConfig({ removeRoom: patch.room, room: prev || '' });
       S.netError = '';
       if (S.cfg.room) await enterRoom();
-      return fail(missing ? 'この招待コードの会議が見つかりませんでした。幹事が会議を作り直していないか確かめてください。' : '共有データベースにつながりませんでした。（' + why + '）');
+      return fail(missing ? 'この招待コードの会議が見つかりませんでした。代表者が会議を作り直していないか確かめてください。' : '共有データベースにつながりませんでした。（' + why + '）');
     }
     S.startMode = '';
     S.tab = 'room';
@@ -3779,7 +3794,7 @@ window.sampleAi = module.exports; })();
         h(
           'div',
           { class: 'card' },
-          h('h2', {}, '会議を作る（幹事）'),
+          h('h2', {}, '会議を作る（代表者）'),
           h('div', { class: 'hint' }, 'ここで入れた内容は、参加したメンバー全員に共有されます。あとから「② 会議と結果」で直せます。'),
           field('c-name', 'あなたの名前', { value: S.cfg.name || '', placeholder: '例：りょうま' }),
           field('c-theme', 'テーマ（何を決める会議か）', { placeholder: '例：かゆいところに手が届くアプリ' }),
@@ -3787,7 +3802,7 @@ window.sampleAi = module.exports; })();
           critTemplateRow((text) => { const el = $('c-criteria'); if (el) el.value = text; }),
           field('c-deadline', '預ける締切（任意）', { type: 'datetime-local' }, 'この時刻になると、まだ預けていない人がいても、預けた人だけ（2人以上）で会議を自動で始めます。空欄なら全員を待ちます。'),
           field('c-cond', 'そのほかの条件（任意）', { placeholder: '例：3人チーム、開発期間は7日間、11/18締切' }),
-          field('c-size', 'メンバーの人数（幹事を含む）', { type: 'number', min: '2', max: '12', value: '3' }, 'この人数が預け終わると、会議が自動で始まります。'),
+          field('c-size', 'メンバーの人数（代表者を含む）', { type: 'number', min: '2', max: '12', value: '3' }, 'この人数が預け終わると、会議が自動で始まります。'),
           (() => {
             const fields = [
               field('c-surl', 'Project URL', { value: S.cfg.dbDefault ? S.cfg.dbDefault.url : S.cfg.supabaseUrl || '', placeholder: 'https://xxxx.supabase.co' }),
@@ -3819,7 +3834,7 @@ window.sampleAi = module.exports; })();
           { class: 'card' },
           h('h2', {}, '招待コードで参加する'),
           field('j-name', 'あなたの名前', { value: S.cfg.name || '', placeholder: '例：あおい' }),
-          field('j-code', '招待コード', { value: S.joinCode || '', placeholder: '例：K7M2-9QXD（幹事から送られてきた8文字）', autocomplete: 'off', spellcheck: 'false' }),
+          field('j-code', '招待コード', { value: S.joinCode || '', placeholder: '例：K7M2-9QXD（代表者から送られてきた8文字）', autocomplete: 'off', spellcheck: 'false' }),
           h('div', { class: 'hint', style: 'margin-top:8px' }, '入力はこの2つだけです。参加すると、あなたの代理人と1対1で話す画面が開きます。'),
           h('div', { class: 'row end', style: 'margin-top:16px' }, back, h('button', { class: 'btn', onclick: joinMeeting }, '参加する'))
         )
@@ -3847,8 +3862,8 @@ window.sampleAi = module.exports; })();
       h(
         'div',
         { class: 'choices' },
-        h('div', { class: 'card choice' }, h('h2', {}, '会議を作る'), h('div', { class: 'hint' }, '幹事として、テーマ・評価基準・人数を決めて会議を作ります。できた招待コードをメンバーに送ります。'), h('button', { class: 'btn big', onclick: () => { S.startMode = 'create'; render(); } }, '幹事として始める')),
-        h('div', { class: 'card choice' }, h('h2', {}, '招待コードで参加する'), h('div', { class: 'hint' }, '幹事から送られてきた招待コードを貼り付けて、会議に参加します。入力は名前と招待コードだけです。'), h('button', { class: 'btn ghost big', onclick: () => { S.startMode = 'join'; render(); } }, 'メンバーとして参加する'))
+        h('div', { class: 'card choice' }, h('h2', {}, '会議を作る'), h('div', { class: 'hint' }, '代表者として、テーマ・評価基準・人数を決めて会議を作ります。できた招待コードをメンバーに送ります。'), h('button', { class: 'btn big', onclick: () => { S.startMode = 'create'; render(); } }, '代表者として始める')),
+        h('div', { class: 'card choice' }, h('h2', {}, '招待コードで参加する'), h('div', { class: 'hint' }, '代表者から送られてきた招待コードを貼り付けて、会議に参加します。入力は名前と招待コードだけです。'), h('button', { class: 'btn ghost big', onclick: () => { S.startMode = 'join'; render(); } }, 'メンバーとして参加する'))
       ),
       h('details', { class: 'more startnote' }, h('summary', {}, 'データの扱い（入力した内容がどこへ行くか）'), dataNote())
     );
@@ -3858,7 +3873,7 @@ window.sampleAi = module.exports; })();
     if (!ready() || S.startMode) return viewStart();
     const r = roomInfo();
     const leader = (S.snap.member[r.leaderId] || {}).name || '';
-    const ai = S.cfg.hasApiKey ? '自分のAPIキーを使用' : S.cfg.demo ? '見本モード（決まった見本の応答。本物のAIではありません）' : S.cfg.serverAi ? '使えます（会議のサーバー経由。設定は不要です）' : '使えません（フォームで預け、会議は幹事のアプリが進めます）';
+    const ai = S.cfg.hasApiKey ? '自分のAPIキーを使用' : S.cfg.demo ? '見本モード（決まった見本の応答。本物のAIではありません）' : S.cfg.serverAi ? '使えます（会議のサーバー経由。設定は不要です）' : '使えません（フォームで預け、会議は代表者のアプリが進めます）';
     const copy = async () => {
       try {
         await navigator.clipboard.writeText(inviteCode());
@@ -3915,7 +3930,7 @@ window.sampleAi = module.exports; })();
       S.notice = '保存しました。';
       render();
     };
-    // ---- 幹事の操作・困ったとき・このアプリについて ----
+    // ---- 代表者の操作・困ったとき・このアプリについて ----
     const tool = async (label, fn) => {
       if (S.busy) return;
       S.busy = 'tool';
@@ -3954,7 +3969,7 @@ window.sampleAi = module.exports; })();
             S.diag.steps.map((x) => h('div', { class: 'diag-row ' + (x.skip ? 'skip' : x.ok ? 'ok' : 'ng') }, h('span', { class: 'dm' }, x.skip ? '—' : x.ok ? '✓' : '✗'), h('div', { class: 'dt' }, h('b', {}, x.label), h('span', {}, ' ' + x.detail + (x.ms > 50 ? `（${(x.ms / 1000).toFixed(1)}秒）` : '')), x.hint ? h('div', { class: 'hint' }, x.hint) : null)))
           )
         : null;
-    // 幹事: メンバーを会議から外す。その人の預けた内容も消え、会議はやり直しになる
+    // 代表者: メンバーを会議から外す。その人の預けた内容も消え、会議はやり直しになる
     const removeMember = (id) =>
       tool('メンバーを外しています', async () => {
         if (isRunning()) throw new Error('会議が進行中です。終わってから外してください。');
@@ -3972,7 +3987,7 @@ window.sampleAi = module.exports; })();
         }
         S.notice = `${name}さんを会議から外しました。` + (hadMeeting ? '残ったメンバーで、会議をやり直します。' : '');
       });
-    // 幹事: この会議のデータを、共有の保存先からすべて消す
+    // 代表者: この会議のデータを、共有の保存先からすべて消す
     const deleteRoom = () =>
       tool('会議のデータを消しています', async () => {
         if (isRunning()) throw new Error('会議が進行中です。終わってから削除してください。');
@@ -3992,7 +4007,7 @@ window.sampleAi = module.exports; })();
       const lines = [
         '【MeetForMe 不具合の報告】',
         `版: ${S.cfg.appVersion} ／ 環境: ${S.cfg.platform || ''}`,
-        `共有: ${S.cfg.sharedMode} ／ AI: ${S.cfg.hasApiKey ? '自分のAPIキー' : S.cfg.demo ? '見本モード' : S.cfg.serverAi ? 'サーバー経由' : 'なし'} ／ 役割: ${isLeader() ? '幹事' : 'メンバー'}`,
+        `共有: ${S.cfg.sharedMode} ／ AI: ${S.cfg.hasApiKey ? '自分のAPIキー' : S.cfg.demo ? '見本モード' : S.cfg.serverAi ? 'サーバー経由' : 'なし'} ／ 役割: ${isLeader() ? '代表者' : 'メンバー'}`,
         `会議の状態: ${state().phase || ''}（第${state().round || 0}回）${state().error ? ' ／ 止まった理由: ' + state().error : ''}`,
         S.diag ? '診断: ' + S.diag.steps.map((x) => `${x.skip ? '—' : x.ok ? '✓' : '✗'}${x.label}${x.ok ? '' : '（' + x.detail + '）'}`).join(' ') : '診断: 未実行',
         '',
@@ -4015,7 +4030,7 @@ window.sampleAi = module.exports; })();
       ? h(
           'div',
           { class: 'card', id: 'sec-leader' },
-          h('h2', {}, '幹事の操作'),
+          h('h2', {}, '代表者の操作'),
           h('h3', { style: 'margin-top:6px' }, 'メンバー'),
           others.length
             ? h('div', { class: 'mlist' }, others.map(([id, m]) => h('div', { class: 'mrow' }, avatar(id), h('span', { class: 'nm' }, m.name || '?'), h('span', { class: 'hint' }, S.snap.brief[id] ? '預け済み' : '未入力'), confirmBtn('rm:' + id, '会議から外す', '本当に外す', () => removeMember(id)))))
@@ -4048,7 +4063,7 @@ window.sampleAi = module.exports; })();
       h('div', { class: 'row', style: 'margin-top:10px;flex-wrap:wrap' }, api.checkUpdate ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: checkUpdateNow }, '更新を確認する') : null, h('button', { class: 'btn ghost small', onclick: report }, '不具合を報告する'), h('button', { class: 'btn ghost small', onclick: () => { S.showData = !S.showData; render(); } }, 'データの扱い')),
       S.showData ? dataNote() : null,
       h('h3', { style: 'margin-top:18px' }, 'この端末のデータを消す'),
-      h('div', { class: 'hint' }, 'この端末に保存した名前、参加している会議の一覧、代理人との会話、自分のAPIキーを消して、最初の状態に戻します。共有の保存先にある会議のデータは消えません（消すには、幹事が「この会議のデータをすべて削除する」を使います）。'),
+      h('div', { class: 'hint' }, 'この端末に保存した名前、参加している会議の一覧、代理人との会話、自分のAPIキーを消して、最初の状態に戻します。共有の保存先にある会議のデータは消えません（消すには、代表者が「この会議のデータをすべて削除する」を使います）。'),
       h('div', { class: 'row', style: 'margin-top:8px' }, confirmBtn('wipe', 'この端末のデータを消す', '本当に消す', wipe))
     );
 
@@ -4075,7 +4090,7 @@ window.sampleAi = module.exports; })();
         { class: 'card' },
         h('h2', {}, 'この会議'),
         h('div', { class: 'kv' }, h('b', {}, 'テーマ： '), r.theme || '（未設定）'),
-        h('div', { class: 'kv' }, h('b', {}, '幹事： '), leader || '（決まっていません）', isLeader() && r.leaderId ? '（あなた）' : ''),
+        h('div', { class: 'kv' }, h('b', {}, '代表者： '), leader || '（決まっていません）', isLeader() && r.leaderId ? '（あなた）' : ''),
         h('div', { class: 'kv' }, h('b', {}, 'メンバー： '), `${Object.keys(S.snap.member).length}人が参加中 ／ ${S.teamSize}人で会議を始めます`),
         h('div', { class: 'kv' }, h('b', {}, 'あなたのAI： '), ai),
         h('div', { class: 'kv' }, h('b', {}, '共有： '), S.cfg.sharedMode === 'supabase' ? 'Supabaseで共有中（別々の端末から参加できます）' : 'この端末の中だけ（同じ端末で別人として起動して試せます）')
@@ -4093,7 +4108,7 @@ window.sampleAi = module.exports; })();
         { class: 'card' },
         h('h2', {}, 'あなたの設定'),
         field('s-name', '名前', { value: S.cfg.name || '' }),
-        isLeader() ? field('s-size', 'メンバーの人数（幹事を含む）', { type: 'number', min: '2', max: '12', value: String(S.teamSize) }) : null,
+        isLeader() ? field('s-size', 'メンバーの人数（代表者を含む）', { type: 'number', min: '2', max: '12', value: String(S.teamSize) }) : null,
         h(
           'details',
           { class: 'more', id: 's-more' },
@@ -4183,7 +4198,7 @@ window.sampleAi = module.exports; })();
     );
     $('who').replaceChildren(
       ...[
-        ready() ? h('span', { class: 'whoname' }, `${S.cfg.name}（${isLeader() ? '幹事' : 'メンバー'}）`) : null,
+        ready() ? h('span', { class: 'whoname' }, `${S.cfg.name}（${isLeader() ? '代表者' : 'メンバー'}）`) : null,
         !S.cfg.hasApiKey && !S.cfg.demo && S.cfg.serverAi ? h('span', { class: 'badge', title: 'AIは会議のサーバー経由で動きます。この端末にAPIキーは要りません。' }, 'AI：サーバー経由') : null,
         S.cfg.demo && !S.cfg.hasApiKey ? h('span', { class: 'badge warn', title: 'AIの応答は決まった見本です。APIは呼びません。' }, '見本モード') : null,
         ready() ? h('span', { class: 'badge' + (S.cfg.sharedMode === 'supabase' ? '' : ' warn') }, S.cfg.sharedMode === 'supabase' ? '共有中' : 'この端末だけ') : null,
@@ -4206,9 +4221,9 @@ window.sampleAi = module.exports; })();
     if (livelog) livelog.scrollTop = livelog.scrollHeight;
   }
 
-  // 幹事のアプリ（AIを呼べる）が開いていれば、全員が預けたとき・新しい答えが届いたときに会議を進める
+  // 代表者のアプリ（AIを呼べる）が開いていれば、全員が預けたとき・新しい答えが届いたときに会議を進める
   // 会議をサーバーで進められるとき（関数「meeting」が入っているとき）は、だれの画面からでも「進めてください」と合図だけ送る。
-  // 画面を閉じても会議は進む。合図から90秒たっても始まらないときだけ、これまでどおり幹事の画面で進める
+  // 画面を閉じても会議は進む。合図から90秒たっても始まらないときだけ、これまでどおり代表者の画面で進める
   function serverKick() {
     if (!S.cfg.serverMeeting || !api.kickMeeting || window.PROTO) return false;
     if (!ready() || S.busy || isRunning()) return true;
@@ -4271,6 +4286,10 @@ window.sampleAi = module.exports; })();
       const kicked = room && (room.removed || []).includes(S.cfg.memberId);
       const gone = hadRoom && !room && !Object.keys(S.snap.member).length && !Object.keys(S.snap.state).length;
       if (kicked || gone) {
+        if (kicked) {
+          // 外された人の名前が、メンバーの一覧に残らないようにする
+          for (const kind of ['member', 'brief']) await api.store.del(kind, S.cfg.memberId).catch(() => {});
+        }
         S.cfg = await api.saveConfig({ removeRoom: S.cfg.room });
         resetView();
         S.startMode = '';
@@ -4279,7 +4298,7 @@ window.sampleAi = module.exports; })();
           S.snap = null;
           S.priv = {};
         }
-        S.notice = kicked ? '幹事が、この会議からあなたを外しました。' : 'この会議は、幹事によって削除されました。';
+        S.notice = kicked ? '代表者が、この会議からあなたを外しました。' : 'この会議は、代表者によって削除されました。';
         return render();
       }
     }

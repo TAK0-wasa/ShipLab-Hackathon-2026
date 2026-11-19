@@ -31,7 +31,7 @@ app.whenReady().then(async () => {
   const closeOverlay = () => js(`(() => { const o = document.querySelector('#overlay.show'); if (o) { o.className = ''; o.replaceChildren(); } })()`);
   try {
     if (ROLE === 'leader') {
-      await click('幹事として始める'); await sleep(300);
+      await click('代表者として始める'); await sleep(300);
       await type('#c-name', 'りょうま');
       await type('#c-theme', '発表の役割分担');
       await type('#c-criteria', '全員が無理なく担当できるか\n発表がうまくいくか ×2');
@@ -48,10 +48,10 @@ app.whenReady().then(async () => {
       for (const msg of ['自分は話す役をやりたい', '人前で話すのは好き。質問に答えるのは不安。', 'なし', 'スライドも作れる。今夜2時間使える']) { await type('#chatInput', msg); await click('送信'); await idle(); }
       await click('預ける内容を確認する'); await idle();
       await click('この内容で預ける'); await idle();
-      // メンバーが別のPCから預けるのを待つ → 幹事のアプリが自動で会議を進める
+      // メンバーが別のPCから預けるのを待つ → 代表者のアプリが自動で会議を進める
       await until(async () => { await nav(1).catch(() => {}); return (await text('#view')).includes('推薦案（第1回の議論）'); }, 'メンバーが預けたあと会議が進まない', 120000);
       await idle();
-      if (!(await text('#view')).includes('あおい')) throw new Error('メンバーの名前が幹事側に出ていない');
+      if (!(await text('#view')).includes('あおい')) throw new Error('メンバーの名前が代表者側に出ていない');
       await shot('meeting');
       // メンバーの承認が届くのを待ってから、自分も承認 → 決定
       await until(async () => (await text('#view')).includes('承認 1 / 2 人'), 'メンバーの承認が届かない', 90000);
@@ -59,7 +59,7 @@ app.whenReady().then(async () => {
       await until(async () => (await text('#overlay')).includes('決定'), '決定の表示が出ない', 20000);
       await shot('decided');
       await closeOverlay();
-      // メンバーの画面にも決定が届いてから、幹事が会議のデータを削除する
+      // メンバーの画面にも決定が届いてから、代表者が会議のデータを削除する
       await until(async () => fs.existsSync(path.join(DIR, 'member-saw-decided')), 'メンバーに決定が届かない', 90000);
       await click('設定・招待'); await sleep(300);
       await click('この会議のデータをすべて削除する'); await sleep(200);
@@ -74,24 +74,24 @@ app.whenReady().then(async () => {
       const who = await text('#who');
       if (!(await text('#switch')).includes('発表の役割分担') || !who.includes('あおい（メンバー）') || !who.includes('共有中')) throw new Error('参加後の表示がおかしい: ' + who + ' / ' + (await text('#status')));
       const topic = await js(`(async () => { document.querySelectorAll('nav button')[1].click(); await new Promise(r => setTimeout(r, 400)); document.querySelectorAll('details').forEach((d) => (d.open = true)); await new Promise(r => setTimeout(r, 200)); return document.querySelector('#view').innerText; })()`);
-      if (!topic.includes('発表がうまくいくか ×2') || !topic.includes('幹事が設定します')) throw new Error('幹事が入れた評価基準がメンバーに見えない: ' + topic.slice(0, 200));
+      if (!topic.includes('発表がうまくいくか ×2') || !topic.includes('代表者が設定します')) throw new Error('代表者が入れた評価基準がメンバーに見えない: ' + topic.slice(0, 200));
       await nav(0); await sleep(300);
       await type('.formbody textarea', 'デモ操作の担当');
       await js(`(() => { const ts = document.querySelectorAll('.formbody textarea'); ts[1].value = 'PCを操作してデモを見せる役をやりたい'; ts[1].dispatchEvent(new Event('input', { bubbles: true })); })()`);
       await click('内容を確認する'); await sleep(400);
       await click('この内容で預ける'); await idle();
       await shot('deposited');
-      // 幹事のPCで会議が進むのを待つ（こちらはAPIキーなし）
-      await until(async () => { await nav(1).catch(() => {}); return (await text('#view')).includes('推薦案（第1回の議論）'); }, '幹事のPCで進んだ会議が届かない', 120000);
-      if (!(await text('#view')).includes('りょうま')) throw new Error('幹事の名前がメンバー側に出ていない');
+      // 代表者のPCで会議が進むのを待つ（こちらはAPIキーなし）
+      await until(async () => { await nav(1).catch(() => {}); return (await text('#view')).includes('推薦案（第1回の議論）'); }, '代表者のPCで進んだ会議が届かない', 120000);
+      if (!(await text('#view')).includes('りょうま')) throw new Error('代表者の名前がメンバー側に出ていない');
       await until(async () => !(await js(`[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('この案を承認する')).disabled`)), '承認ボタンが押せない', 60000);
       await click('この案を承認する'); await idle();
-      await until(async () => (await text('#overlay')).includes('決定'), '幹事の承認後、決定が届かない', 90000);
+      await until(async () => (await text('#overlay')).includes('決定'), '代表者の承認後、決定が届かない', 90000);
       await shot('decided');
       await closeOverlay();
       fs.writeFileSync(path.join(DIR, 'member-saw-decided'), 'ok');
-      // 幹事が会議のデータを削除すると、メンバーの画面からも会議がなくなる
-      await until(async () => (await text('#status')).includes('幹事によって削除されました'), '削除されたことがメンバーに伝わらない', 60000);
+      // 代表者が会議のデータを削除すると、メンバーの画面からも会議がなくなる
+      await until(async () => (await text('#status')).includes('代表者によって削除されました'), '削除されたことがメンバーに伝わらない', 60000);
       if (!(await text('#view')).includes('招待コードで参加する')) throw new Error('削除されたあと、はじめの画面に戻らない');
     }
     if (errors.length) throw new Error('コンソールエラー: ' + errors.join(' / '));

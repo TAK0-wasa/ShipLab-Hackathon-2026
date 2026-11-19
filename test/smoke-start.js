@@ -1,4 +1,4 @@
-// はじめの画面 → 会議を作る（見本モード）→ 預ける → 幹事のアプリが自動で会議 → 抜ける → 招待コードで参加（APIキーなし・フォーム入力）
+// はじめの画面 → 会議を作る（見本モード）→ 預ける → 代表者のアプリが自動で会議 → 抜ける → 招待コードで参加（APIキーなし・フォーム入力）
 // 実行: npx electron test/smoke-start.js （スクリーンショットの出力先は環境変数 SMOKE_OUT）
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
@@ -34,16 +34,16 @@ app.whenReady().then(async () => {
     // 1. はじめの画面
     await need('#view', ['会議を作る', '招待コードで参加する'], 'はじめの画面');
     await shot('s1-start');
-    await click('幹事として始める'); await sleep(300);
+    await click('代表者として始める'); await sleep(300);
     await type('#c-name', 'りょうま');
     await type('#c-theme', 'かゆいところに手が届くアプリ');
     await type('#c-criteria', 'テーマに合っているか\n新しさがあるか ×2\n完成度・実際に動くか');
     await js(`window.api.saveConfig({ demo: true })`); // 見本モードは設定の奥にあるので、テストでは直接入れる
     await shot('s2-create');
     await click('会議を作る'); await sleep(1200);
-    await need('#view', ['招待コード', '幹事： りょうま', '見本モード'], '作成後の設定画面');
+    await need('#view', ['招待コード', '代表者： りょうま', '見本モード'], '作成後の設定画面');
     if (await js(`document.querySelector('#s-more').open || document.querySelector('#s-key').checkVisibility()`)) throw new Error('上級者向けの設定が最初から開いている');
-    await need('#who', ['りょうま（幹事）', '見本モード', 'このPCだけ'], 'ヘッダー');
+    await need('#who', ['りょうま（代表者）', '見本モード', 'このPCだけ'], 'ヘッダー');
     await need('#switch', ['会議：', 'かゆいところに手が届くアプリ'], '会議の切り替えボタン');
     if (await js(`!!document.querySelector('#side')`)) throw new Error('左側の一覧が残っている');
     const code = await js(`document.querySelector('#s-invite').value`);
@@ -72,7 +72,7 @@ app.whenReady().then(async () => {
     await need('#sec-wait', ['あなたの考えを預かりました', 'あと2人', '全員がそろうのを待つ', 'まだ参加していない人', '待っている間にできること'], '預けたあとの待ちの表示');
     await shot('s3c-wait');
 
-    // 3. ほかの2人がフォームで預けた、という状態を作る → 幹事のアプリが自動で会議を進める
+    // 3. ほかの2人がフォームで預けた、という状態を作る → 代表者のアプリが自動で会議を進める
     await js(`(async () => {
       const mk = (title, feature) => ({ ideas: [{ title, summary: title + 'の説明', target: { text: '学生', by: 'me' }, problem: { text: '', by: 'ai' }, feature: { text: feature, by: 'me' }, push: 'normal' }], likes: 'すぐ伝わる', worries: '新しさが弱い', mustHaves: ['実際に動くこと'], wantFromOthers: '', acceptCondition: '', impl: 'JavaScriptが書ける', updates: [] });
       await api.store.put('member', 'm-aoi', { name: 'あおい', deposited: true });
@@ -162,7 +162,7 @@ app.whenReady().then(async () => {
     await type('#j-code', code);
     await js(`window.api.saveConfig({ demo: false })`);
     await click('参加する'); await sleep(1500);
-    await need('#who', ['りょうま（幹事）'], '参加後のヘッダー');
+    await need('#who', ['りょうま（代表者）'], '参加後のヘッダー');
     await need('.chat', ['AIのサーバーが使えない', '案の名前', '外したくない条件'], '入力フォーム');
     await type('.formbody textarea', '発表タイマー');
     await js(`(() => { const ts = document.querySelectorAll('.formbody textarea'); ts[1].value = '発表の残り時間を教える'; ts[1].dispatchEvent(new Event('input', { bubbles: true })); })()`);
@@ -170,7 +170,7 @@ app.whenReady().then(async () => {
     await click('内容を確認する'); await sleep(400);
     await need('.side', ['預ける内容の確認', '発表タイマー', 'AIが補完'], 'フォームからの確認画面');
     await click('この内容で預ける'); await idle(); await sleep(300);
-    await need('#status', ['幹事のアプリが開いているとき'], 'キーなしで預けたあとの案内');
+    await need('#status', ['代表者のアプリが開いているとき'], 'キーなしで預けたあとの案内');
 
     // 5. 預けたあとに手直しして、預け直す
     await nav(0); await sleep(300);

@@ -31,7 +31,7 @@ app.whenReady().then(async () => {
   const until = async (fn, label, ms) => { for (let i = 0; i < (ms || 40000) / 250; i++) { if (await fn()) return; await sleep(250); } throw new Error('待っても変わらない: ' + label); };
   const idle = () => until(async () => !(await js(`!!document.querySelector('#status .spin') || [...document.querySelectorAll('.bubble')].some(b => b.textContent === '…')`)), '処理中のまま');
   try {
-    await click('幹事として始める'); await sleep(300);
+    await click('代表者として始める'); await sleep(300);
     await type('#c-name', 'りょうま');
     await type('#c-theme', 'かゆいところに手が届くアプリ');
     // 評価基準は見本から入れる
@@ -42,7 +42,7 @@ app.whenReady().then(async () => {
     await js(`window.api.saveConfig({ demo: true })`);
     await click('会議を作る'); await sleep(1200);
 
-    // 幹事ともう1人だけが預けた状態（3人中2人）
+    // 代表者ともう1人だけが預けた状態（3人中2人）
     const mk = `(title) => ({ ideas: [{ title, summary: title + 'の説明', target: { text: '学生', by: 'me' }, problem: { text: '', by: 'ai' }, feature: { text: '目玉', by: 'me' }, push: 'normal' }], likes: 'すぐ伝わる', worries: '新しさが弱い', mustHaves: ['実際に動くこと'], wantFromOthers: '', acceptCondition: '', impl: 'JavaScriptが書ける', updates: [] })`;
     await js(`(async () => { const mk = ${mk}; const me = (await api.getConfig()).memberId;
       await api.store.put('member', me, { name: 'りょうま', deposited: true });
