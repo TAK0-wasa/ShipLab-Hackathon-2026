@@ -5,7 +5,7 @@
 **集まらなくても決まる、AI代理会議。** メンバー1人に1体ずつAIの代理人が付き、あなたが留守の間に、「どの案にするか」を決める会議を本人のかわりに進めるアプリです。（旧名：るす番会議・かわりに会議）
 
 - **Web版（インストール不要）**：https://meetforme.vercel.app/ （スマホ・Mac・Windowsのブラウザ）
-- **デスクトップ版（Windows）**：`dist\meetforme-setup-（バージョン）.exe`
+- **デスクトップ版（Windows）**：`dist\meetforme-setup-v0.39.19.exe`
 - **デモ動画（YouTube）**：https://www.youtube.com/watch?v=5JVYGNUDQA4
 - ShipLab Hackathon 2026（テーマ「かゆいところに手が届くアプリ」）の提出作品です。
 - **チーム**：RememBug Me（3人）
