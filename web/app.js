@@ -1,4 +1,4 @@
-// MeetForMe Web版 v0.36.1（node web/build.js で作成。直接は書き換えない）
+// MeetForMe Web版 v0.37.3（node web/build.js で作成。直接は書き換えない）
 (function () { var module = { exports: {} };
 // 見本モード用の「AIの代わり」。APIを呼ばずに、決まった形の見本の応答を返す。
 // 画面の流れ（個室 → 預ける → 会議 → 採点 → 推薦 → 承認）を、費用をかけずに確かめるためのもの。
@@ -153,7 +153,7 @@ window.sampleAi = module.exports; })();
 // ・AIは会議のサーバー（Supabase の Edge Function「claude」）経由だけで使う。ClaudeのAPIキーはブラウザに置かない
 /* global sampleAi */
 (function () {
-  const VERSION = '0.36.1';
+  const VERSION = '0.37.3';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const REPO_URL = 'https://github.com/TAK0-wasa/ShipLab-Hackathon-2026';
   // デスクトップ版と同じ接続先（公開してよい種類のキー）。会議の中身は、会議の番号を知っている人しか読み書きできない（supabase_setup.sql）
@@ -1882,6 +1882,7 @@ window.sampleAi = module.exports; })();
         }
       } catch (e) {}
     }
+    if (S.todoInit) fresh.forEach((t) => addAlert(t.text));
     S.seenTodo = new Set(urgent.map((t) => t.key));
     S.todoInit = true;
   }
@@ -2194,6 +2195,7 @@ window.sampleAi = module.exports; })();
     S.busy = '';
     S.progress = '';
     await refresh();
+    if (kind === 'meeting') checkEvents();
     render();
   }
 
@@ -2267,14 +2269,30 @@ window.sampleAi = module.exports; })();
     const key = 'q:' + q.id;
     const text = (S.drafts[key] || '').trim();
     if (!text) return;
-    run('meeting', async () => {
-      const left = await Engine.answerQuestion(ctx(), q.id, text);
+    // 「答える」ボタンが薄くなるのは、答えを保存しているあいだだけにする（議論のやり直しは、保存が終わってから始める）
+    let left = null;
+    run('answer', async () => {
+      left = await Engine.answerQuestion(ctx(), q.id, text);
       delete S.drafts[key];
+      if (left === 0 && !canAI()) S.notice = '答えを代理人に伝えました。幹事のアプリが開いているときに、議論をやり直します。';
+    }).then(() => {
       if (left === 0 && canAI()) {
         S.tab = 'meeting';
+        startMeeting('rerun');
+      }
+    });
+  }
+
+  // 推薦とは別の案にしたいとき：その案を推すと代理人に伝えて、議論をやり直す
+  function wantCand(c) {
+    S.wantConfirm = '';
+    run('meeting', async () => {
+      await Engine.addUpdate(ctx(), `推薦案ではなく、「${c.title}」にしたいです。この案を推します。`);
+      if (canAI()) {
+        S.tab = 'meeting';
         await Engine.runMeeting(ctx(), { mode: 'rerun' });
-      } else if (left === 0) {
-        S.notice = '答えを代理人に伝えました。幹事のアプリが開いているときに、議論をやり直します。';
+      } else {
+        S.notice = '「' + c.title + '」にしたいと伝えました。幹事のアプリが開いているときに、議論をやり直します。';
       }
     });
   }
@@ -2471,7 +2489,7 @@ window.sampleAi = module.exports; })();
           c ? h('div', { class: 'hint' }, `「${c.title}」について`) : null,
           h('p', {}, q.text),
           draftArea('q:' + q.id, { placeholder: '一言でOKです' }),
-          h('div', { class: 'row end' }, h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => answer(q) }, '答える'))
+          h('div', { class: 'row end' }, h('button', { class: 'btn small', disabled: S.busy === 'answer', onclick: () => answer(q) }, '答える'))
         );
       })
     );
@@ -3102,6 +3120,91 @@ window.sampleAi = module.exports; })();
       if (canNotify() && (document.hidden || !document.hasFocus())) notifyUser('MeetForMe：決定しました', `「${c.title}」に決まりました。`);
     } catch (e) {}
   }
+  // ---------- お知らせ一覧（ベルマーク） ----------
+  function loadAlerts() {
+    try {
+      S.alerts = JSON.parse(localStorage.getItem('mfm-alerts') || '[]');
+      S.alertsRead = Number(localStorage.getItem('mfm-alerts-read') || 0);
+    } catch (e) {
+      S.alerts = [];
+      S.alertsRead = 0;
+    }
+  }
+  function saveAlerts() {
+    try {
+      localStorage.setItem('mfm-alerts', JSON.stringify((S.alerts || []).slice(-30)));
+      localStorage.setItem('mfm-alerts-read', String(S.alertsRead || 0));
+    } catch (e) {}
+  }
+  function addAlert(text) {
+    S.alerts = (S.alerts || []).concat({ t: Date.now(), text }).slice(-30);
+    saveAlerts();
+    renderBell();
+  }
+  function renderBell() {
+    const n = (S.alerts || []).filter((a) => a.t > (S.alertsRead || 0)).length;
+    const el = $('bellN');
+    if (el) el.textContent = n ? String(n) : '';
+    if (S.bellOpen) renderBellPanel();
+  }
+  function renderBellPanel() {
+    const el = $('bellpanel');
+    const list = (S.alerts || []).slice().reverse();
+    const fmt = (t) => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+    el.className = 'show';
+    el.replaceChildren(
+      h('div', { class: 'bh' }, 'お知らせ'),
+      ...(list.length
+        ? list.map((a) => h('div', { class: 'bi' + (a.t > (S.bellPrev || 0) ? ' new' : '') }, h('span', { class: 'bt' }, fmt(a.t)), a.text))
+        : [h('div', { class: 'be' }, 'お知らせはまだありません。新しい人が参加したときや、会議が終わったときに、ここに出ます。')])
+    );
+  }
+  function closeBell() {
+    S.bellOpen = false;
+    const el = $('bellpanel');
+    if (el) el.className = '';
+  }
+  function setupBell() {
+    loadAlerts();
+    $('bell').addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (S.bellOpen) return closeBell();
+      S.bellOpen = true;
+      S.bellPrev = S.alertsRead || 0;
+      S.alertsRead = Date.now();
+      saveAlerts();
+      renderBell();
+      renderBellPanel();
+    });
+    document.addEventListener('click', (e) => { if (S.bellOpen && !$('bellpanel').contains(e.target)) closeBell(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.bellOpen) closeBell(); });
+    renderBell();
+  }
+
+  // お知らせ: 新しい人が参加したとき・会議が終わったときに、画面の上に出す（決定は別の画面で出る）
+  function checkEvents() {
+    if (!ready() || !S.snap) return;
+    const ids = Object.keys(S.snap.member || {});
+    const st = state();
+    if (S.evRoom !== S.cfg.room || !S.evMembers) {
+      S.evRoom = S.cfg.room;
+      S.evMembers = ids;
+      S.evRunAt = st.lastRunAt || 0;
+      return;
+    }
+    const msgs = [];
+    ids.filter((id) => !S.evMembers.includes(id) && id !== S.cfg.memberId).forEach((id) => msgs.push(`${(S.snap.member[id] || {}).name || '新しいメンバー'}さんが参加しました。`));
+    S.evMembers = ids;
+    if (st.phase === 'review' && !isRunning() && (st.lastRunAt || 0) > (S.evRunAt || 0)) msgs.push('会議が終わりました。推薦案を見て、承認してください。');
+    S.evRunAt = st.lastRunAt || 0;
+    if (!msgs.length) return;
+    msgs.forEach(addAlert);
+    S.notice = msgs.join(' ');
+    try {
+      if (canNotify() && (document.hidden || !document.hasFocus())) notifyUser('MeetForMe', msgs[0]);
+    } catch (e) {}
+    renderStatus();
+  }
   function checkDecided() {
     if (!ready() || !S.snap) return;
     const st = state();
@@ -3112,7 +3215,11 @@ window.sampleAi = module.exports; })();
     }
     const was = S.phaseSeen;
     S.phaseSeen = st.phase;
-    if (st.phase === 'decided' && was !== 'decided') showDecided(st);
+    if (st.phase === 'decided' && was !== 'decided') {
+      const dc = S.snap.cand[st.decidedCandId];
+      addAlert(dc ? `「${dc.title}」に決まりました。` : '決定しました。');
+      showDecided(st);
+    }
   }
 
   // 技術的な実現性（進行役AIの検討）
@@ -3335,6 +3442,7 @@ window.sampleAi = module.exports; })();
                           h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', onclick: () => { S.open.say = false; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy || running, onclick: () => tellAgent('comment') }, '代理人に伝えて議論をやり直す'))
                         )
                       : h('button', { class: 'btn ghost block', disabled: !!S.busy || running, onclick: () => { S.open.say = true; render(); } }, '承認せず、一言返す'),
+                    h('div', { class: 'hint', style: 'margin-top:6px' }, '別の案にしたいときは、下の「案の一覧」でその案を開いて、「この案にしたい」を押してください。'),
                   ]
                 : null,
               approvalRow(st),
@@ -3381,6 +3489,13 @@ window.sampleAi = module.exports; })();
           partsView(c),
           c.why ? h('div', { class: 'hint', style: 'margin-top:6px' }, (c.origin === 'ai' ? 'この案を足した理由：' : '組み合わせの狙い：') + c.why) : null,
           feasView(c, false),
+          (() => {
+            const ok = st.phase === 'review' && (st.participants || []).includes(S.cfg.memberId) && c.id !== (rec && rec.topId) && !c.dropped && !(t && t.excluded) && !isRunning();
+            if (!ok) return null;
+            return S.wantConfirm === c.id
+              ? h('div', { class: 'row end', style: 'margin-top:10px;align-items:center' }, h('span', { class: 'hint', style: 'flex:1' }, `「${c.title}」を推すと代理人に伝えて、議論をやり直します。`), h('button', { class: 'btn ghost small', onclick: () => { S.wantConfirm = ''; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => wantCand(c) }, '伝えてやり直す'))
+              : h('div', { class: 'row end', style: 'margin-top:10px' }, h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => { S.wantConfirm = c.id; render(); } }, 'この案にしたい'));
+          })(),
           t && t.marks && t.marks.length
             ? h('div', { class: 'fit' }, h('b', {}, '評価基準ごとの採点（進行役AI）'), h('div', { class: 'marks' + (t.marks.some((m) => m.note) ? ' rows' : '') }, t.marks.map((m) => h('div', { class: 'mkrow' }, h('span', { class: 'mk s' + Math.round(m.score) }, `${m.name}${m.weight !== 1 ? ' ×' + m.weight : ''}：${m.score}/5`), m.spread ? h('span', { class: 'mkspread', title: '2回採点した結果に差がありました。平均を使っています' }, `2回の差 ${m.spread}`) : null, m.note ? h('span', { class: 'mknote' }, m.note) : null))), t.comment ? h('div', { class: 'hint' }, t.comment) : null)
             : null,
@@ -4104,6 +4219,7 @@ window.sampleAi = module.exports; })();
         return render();
       }
     }
+    checkEvents();
     autoRun();
     if (!wasRunning && isRunning() && S.tab === 'room' && S.snap.brief[S.cfg.memberId]) {
       const el = document.activeElement;
@@ -4152,6 +4268,7 @@ window.sampleAi = module.exports; })();
       const code = S.joinCode.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
       if (!(S.cfg.rooms || []).some((x) => x.room === code || x.room === S.joinCode)) S.startMode = 'join';
     }
+    setupBell();
     render();
     setInterval(poll, 1500);
     setInterval(pollOthers, 15000);
