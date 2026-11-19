@@ -6,9 +6,7 @@
 
 - **Web版（インストール不要）**：https://meetforme.vercel.app/ （スマホ・Mac・Windowsのブラウザ）
 - **デスクトップ版（Windows）**：`dist\meetforme-setup-（バージョン）.exe`
-<!-- デモ動画のURLができたら、次の行を「コメントの外」に出し（この注意書きごと消してかまいません）、URLを貼ってください。
-- **デモ動画（YouTube）**：https://www.youtube.com/watch?v=ここにURL
--->
+- **デモ動画（YouTube）**：https://www.youtube.com/watch?v=5JVYGNUDQA4
 - ShipLab Hackathon 2026（テーマ「かゆいところに手が届くアプリ」）の提出作品です。
 - **チーム**：RememBug Me（3人）
 - **このリポジトリのバージョン**：v0.36.1
