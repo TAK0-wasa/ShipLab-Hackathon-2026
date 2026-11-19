@@ -611,19 +611,20 @@
     const row = (label, p) => [h('dt', {}, label), h('dd', {}, Engine.partText(p) || '—', Engine.partText(p) ? byTag(p) : null)];
     return h('dl', { class: 'parts' }, row('誰向けか', c.target), row('何を解決するか', c.problem), row('目玉機能', c.feature));
   }
-  function briefView(b) {
+  function briefView(b, actions) {
     const kv = (label, v) => h('div', { class: 'kv' }, h('b', {}, label + '： '), v || '（聞けていません）');
     return h(
       'div',
       {},
       h('h3', {}, '会議で公開される内容（案）'),
-      b.ideas.map((i) =>
+      b.ideas.map((i, idx) =>
         h(
           'div',
           { class: 'idea' },
           h('div', { class: 'ttl' }, i.title, i.push === 'push' ? h('span', { class: 'tag push' }, '推し') : null, i.push === 'drop' ? h('span', { class: 'tag ai' }, '無しでいい') : null),
           i.summary ? h('div', { class: 'hint' }, i.summary) : null,
-          partsView(i)
+          partsView(i),
+          actions ? actions(i, idx) : null
         )
       ),
       h('h3', {}, 'あなたの代理人だけが持つ内容'),
@@ -636,6 +637,24 @@
       kv('納得の条件（あれば賛成できる）', b.acceptCondition),
       b.updates && b.updates.length ? h('div', { class: 'kv' }, h('b', {}, 'あとから伝えたこと： '), h('ul', { class: 'plain' }, b.updates.map((u) => h('li', {}, u.text)))) : null
     );
+  }
+  // 各案の下に出す「この案を手直しする」「消す」（src: 'saved' は預け済み、'pending' は預ける前の確認）
+  function ideaActions(src) {
+    return (idea, idx) => {
+      if (S.edit || state().phase === 'decided') return null;
+      const many = (src === 'saved' ? S.priv.brief : S.priv.pendingBrief).ideas.length > 1;
+      return h(
+        'div',
+        { class: 'ideaact' },
+        S.confirmIdea === idx && src === 'saved'
+          ? [h('span', { class: 'hint' }, 'この案を消して、預け直します。'), h('button', { class: 'btn small danger', disabled: !!S.busy, onclick: () => removeIdea(idx) }, '本当に消す'), h('button', { class: 'btn ghost small', onclick: () => { S.confirmIdea = -1; render(); } }, 'やめる')]
+          : [
+              h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => openEdit(src, idx) }, 'この案を手直しする'),
+              src === 'saved' && many ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { S.confirmIdea = idx; render(); } }, '消す') : null,
+              src === 'saved' && !many ? h('span', { class: 'hint' }, '案が1つのときは、消せません') : null,
+            ]
+      );
+    };
   }
   // ---------- 預けた内容の手直し ----------
   const E_KEYS = ['likes', 'worries', 'must', 'impl', 'want', 'accept'];
@@ -1078,7 +1097,7 @@
           { class: 'card', id: 'sec-brief' },
           h('h2', {}, '預ける内容の確認'),
           h('div', { class: 'hint' }, '「本人」はあなたが言ったこと、「AIが補完」は代理人が仮で埋めたところです。違っていたら「手直しする」で直接書き換えられます。「やめる」を押して、代理人とのチャットで言い直すこともできます。'),
-          briefView(S.priv.pendingBrief),
+          briefView(S.priv.pendingBrief, ideaActions('pending')),
           h(
             'div',
             { class: 'row end' },
@@ -1107,31 +1126,8 @@
         h(
           'div',
           { class: 'card', id: 'sec-brief' },
-          h('div', { class: 'row', style: 'align-items:center' }, h('h2', { style: 'margin:0;flex:1' }, '代理人に預け済み'), state().phase === 'decided' ? null : h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => openEdit('saved') }, '手直しする')),
-          briefView(S.priv.brief),
-          state().phase === 'decided'
-            ? null
-            : h(
-                'div',
-                { class: 'myideas' },
-                h('b', {}, '預けた案（自分の案だけ直せます・消せます）'),
-                (S.priv.brief.ideas || []).map((idea, i) =>
-                  h(
-                    'div',
-                    { class: 'myidea' },
-                    h('span', { class: 't' }, idea.title || '（名前なし）'),
-                    S.confirmIdea === i
-                      ? h('span', { class: 'row', style: 'gap:6px;flex:none' }, h('button', { class: 'btn small danger', disabled: !!S.busy, onclick: () => removeIdea(i) }, '本当に消す'), h('button', { class: 'btn ghost small', onclick: () => { S.confirmIdea = -1; render(); } }, 'やめる'))
-                      : h(
-                          'span',
-                          { class: 'row', style: 'gap:6px;flex:none' },
-                          h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => openEdit('saved', i) }, 'この案を手直しする'),
-                          (S.priv.brief.ideas || []).length > 1 ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { S.confirmIdea = i; render(); } }, '消す') : null
-                        )
-                  )
-                ),
-                (S.priv.brief.ideas || []).length > 1 ? null : h('div', { class: 'hint' }, '案が1つだけのときは、消せません。')
-              ),
+          h('div', { class: 'row', style: 'align-items:center' }, h('h2', { style: 'margin:0;flex:1' }, '代理人に預け済み')),
+          briefView(S.priv.brief, ideaActions('saved')),
           h('label', {}, 'やっぱりこう思う（代理人に追加で伝える）'),
           draftArea('tell', { placeholder: '例：実装が間に合うなら、Bさんの案でもいいと思ってきた' }),
           h(
