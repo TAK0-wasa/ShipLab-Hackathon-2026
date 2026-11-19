@@ -822,7 +822,7 @@
   function canResume(snap) {
     const st = snap.state.main || {};
     const ck = st.ck;
-    if (!ck || st.phase !== 'collecting' || ck.round !== st.round || !Object.keys(snap.cand).length) return false;
+    if (!ck || (st.phase !== 'collecting' && st.phase !== 'meeting') || ck.round !== st.round || !Object.keys(snap.cand).length) return false;
     const now0 = Object.keys(snap.brief).filter((id) => snap.member[id]);
     return Array.isArray(ck.participants) && ck.participants.length === now0.length && ck.participants.every((id) => now0.includes(id));
   }
@@ -1104,6 +1104,8 @@
     if (st.runner && t - (st.runnerAt || 0) < LOCK_MS) return null; // だれかが進めている
     const ids = Object.keys(snap.brief).filter((id) => snap.member[id]).sort();
     if (ids.length < 2 || ids.some((id) => snap.brief[id].scrubbed)) return null;
+    // 進めていた端末が途中で閉じられ、進行中の印だけが残った会議は、続きから（記録がなければ最初から）進め直す
+    if (st.phase === 'meeting' && st.runner) return { mode: canResume(snap) ? 'resume' : 'full' };
     if (st.paused && canResume(snap)) return { mode: 'resume' };
     const size = Number(room.teamSize) || 0;
     const due = !!room.deadlineAt && t >= room.deadlineAt;
@@ -1184,6 +1186,26 @@
     return false;
   }
 
+  // 推薦とは別の案を、人が選び直す。推薦をその案に変えて、これまでの承認は取り消し、選んだ本人だけが承認した状態にする
+  async function adoptOther(ctx, candId) {
+    const snap = await snapshot(ctx.store);
+    const st = snap.state.main;
+    if (!st || st.phase !== 'review' || !st.recommendation) throw new Error('いまは案を選び直せません。');
+    if (st.runner) throw new Error('会議が進んでいる最中は、案を選び直せません。');
+    if (!(st.participants || []).includes(ctx.me.id)) throw new Error('この会議の参加者だけが、案を選び直せます。');
+    const cand = snap.cand[candId];
+    if (!cand || cand.dropped) throw new Error('この案は選べません。');
+    const rec0 = st.recommendation;
+    if (rec0.topId === candId) return approve(ctx);
+    const prev = snap.cand[rec0.topId];
+    const name = (snap.member[ctx.me.id] || {}).name || ctx.me.name || '誰か';
+    const rec = { ...rec0, topId: candId, runnerUpId: rec0.topId, tie: false, unstable: false, conflict: '', pickedBy: ctx.me.id, reason: `${name}さんが、推薦案「${prev ? prev.title : ''}」からこの案に選び直しました。（元の推薦の理由：${rec0.reason || ''}）` };
+    await ctx.store.put('state', 'main', { ...st, recommendation: rec });
+    for (const id of st.participants || []) await ctx.store.put('approval', id, { round: -1, ok: false, at: now(), reset: true });
+    await ctx.store.put('msg', uid('g'), { round: st.round, at: now(), speaker: 'system', speakerName: 'システム', type: 'system', text: `${name}さんが、推薦を「${cand.title}」に選び直しました。承認はやり直しです。ほかの人は、この案を見て承認するか、一言返してください。` });
+    return approve(ctx);
+  }
+
   function publicContext(snap) {
     const cands = activeCands(snap);
     if (!cands.length) return '';
@@ -1230,6 +1252,7 @@
     addUpdate,
     answerQuestion,
     approve,
+    adoptOther,
     publicContext,
   };
 });

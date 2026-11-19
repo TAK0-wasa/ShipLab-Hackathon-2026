@@ -1,4 +1,4 @@
-// MeetForMe Web版 v0.39.4（node web/build.js で作成。直接は書き換えない）
+// MeetForMe Web版 v0.39.6（node web/build.js で作成。直接は書き換えない）
 (function () { var module = { exports: {} };
 // 見本モード用の「AIの代わり」。APIを呼ばずに、決まった形の見本の応答を返す。
 // 画面の流れ（個室 → 預ける → 会議 → 採点 → 推薦 → 承認）を、費用をかけずに確かめるためのもの。
@@ -153,7 +153,7 @@ window.sampleAi = module.exports; })();
 // ・AIは会議のサーバー（Supabase の Edge Function「claude」）経由だけで使う。ClaudeのAPIキーはブラウザに置かない
 /* global sampleAi */
 (function () {
-  const VERSION = '0.39.4';
+  const VERSION = '0.39.6';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const REPO_URL = 'https://github.com/TAK0-wasa/ShipLab-Hackathon-2026';
   // デスクトップ版と同じ接続先（公開してよい種類のキー）。会議の中身は、会議の番号を知っている人しか読み書きできない（supabase_setup.sql）
@@ -1362,7 +1362,7 @@ window.sampleAi = module.exports; })();
   function canResume(snap) {
     const st = snap.state.main || {};
     const ck = st.ck;
-    if (!ck || st.phase !== 'collecting' || ck.round !== st.round || !Object.keys(snap.cand).length) return false;
+    if (!ck || (st.phase !== 'collecting' && st.phase !== 'meeting') || ck.round !== st.round || !Object.keys(snap.cand).length) return false;
     const now0 = Object.keys(snap.brief).filter((id) => snap.member[id]);
     return Array.isArray(ck.participants) && ck.participants.length === now0.length && ck.participants.every((id) => now0.includes(id));
   }
@@ -1644,6 +1644,8 @@ window.sampleAi = module.exports; })();
     if (st.runner && t - (st.runnerAt || 0) < LOCK_MS) return null; // だれかが進めている
     const ids = Object.keys(snap.brief).filter((id) => snap.member[id]).sort();
     if (ids.length < 2 || ids.some((id) => snap.brief[id].scrubbed)) return null;
+    // 進めていた端末が途中で閉じられ、進行中の印だけが残った会議は、続きから（記録がなければ最初から）進め直す
+    if (st.phase === 'meeting' && st.runner) return { mode: canResume(snap) ? 'resume' : 'full' };
     if (st.paused && canResume(snap)) return { mode: 'resume' };
     const size = Number(room.teamSize) || 0;
     const due = !!room.deadlineAt && t >= room.deadlineAt;
@@ -3407,14 +3409,15 @@ window.sampleAi = module.exports; })();
   // ---------- 会議が途中で止まったとき ----------
   function failCard() {
     const st = state();
-    if (!st.error || isRunning() || S.busy === 'meeting' || st.phase === 'decided') return null;
+    const stale = st.phase === 'meeting' && !!st.runner && Date.now() - (st.runnerAt || 0) >= Engine.LOCK_MS;
+    if ((!st.error && !stale) || isRunning() || S.busy === 'meeting' || st.phase === 'decided') return null;
     const resumable = Engine.canResume(S.snap);
     const n = st.ck ? (st.ck.r1 || []).length + (st.ck.merge ? 1 : 0) + (st.ck.feas ? 1 : 0) + (st.ck.r2 || []).length : 0;
     return h(
       'div',
       { class: 'card failcard', id: 'sec-fail' },
-      h('h2', {}, '会議が途中で止まりました'),
-      h('div', { class: 'kv' }, h('b', {}, '理由： '), st.error),
+      h('h2', {}, st.error ? '会議が途中で止まりました' : '会議を進めていた端末が止まりました'),
+      h('div', { class: 'kv' }, h('b', {}, '理由： '), st.error || `${st.runner === 'server' ? 'サーバー' : (st.runnerName || 'ほかのメンバー') + 'さんのアプリ'}の画面が、会議の途中で閉じられた（スリープした）ようです。最後の更新は約${Math.round((Date.now() - (st.runnerAt || 0)) / 60000)}分前です。`),
       h('div', { class: 'hint', style: 'margin-top:6px' }, resumable ? `ここまでの進み（${n}段階）は残っています。「続きから再開する」を押すと、止まったところから進めます。` : st.phase === 'review' ? '前回の推薦案はそのまま残っています。' : '「最初からやり直す」で、会議をもう一度始められます。'),
       canAI()
         ? h(
@@ -3468,7 +3471,7 @@ window.sampleAi = module.exports; })();
     } else if (st.runner) {
       lv = 'warn';
       head = '進行中の印が切れています';
-      why = '進めていた端末が止まったようです。「② 会議と結果」の「続きから再開する」で進められます。';
+      why = '進めていた端末が止まったようです。代表者の画面を開いていれば、自動で続きから進みます。進まないときは、「続きから再開する」を押してください。';
     } else if (st.phase === 'collecting') {
       if (dep.length < 2) {
         lv = 'warn';
@@ -3494,6 +3497,7 @@ window.sampleAi = module.exports; })();
       why = '推薦案を見て、承認するか、別の案を選んでください。';
     }
     if (!head) return null;
+    if (lv === 'ok' && !running) return null; // 順調で、会議も動いていないとき（結果の確認など）は、枠を出さない
     const detail = [
       `段階: ${({ collecting: '預けを集めている', meeting: '会議中', review: '結果の確認', decided: '決定済み' })[st.phase] || st.phase || '-'} ／ 回: ${st.round || 0}`,
       `進行役: ${st.runner ? (st.runner === 'server' ? 'サーバー' : st.runnerName || st.runner) : 'なし'}${runAge === null ? '' : `（更新 ${runAge}秒前）`}`,
@@ -4399,6 +4403,8 @@ window.sampleAi = module.exports; })();
       // 会議のあとで預けた人がいる（締切で先に始めた場合など）→ その人を入れて最初からやり直す
       if ((st.participants || []).length && ids.some((id) => !st.participants.includes(id))) { mode = 'full'; late = true; }
     }
+    // 進めていた端末が閉じられて、進行中の印だけが残っているとき（印は3分で切れる）は、続きから進め直す
+    if (st.phase === 'meeting' && st.runner && !isRunning()) mode = Engine.canResume(snap) ? 'resume' : 'full';
     if (!mode) return;
     // 同じ状況では1回しか自動で試さない（失敗したまま繰り返さないため）
     const sig = [mode, st.round || 0, ids.join(','), ids.map((id) => (snap.brief[id].updates || []).length + '/' + (snap.brief[id].editedAt || 0)).join(',')].join(':');
