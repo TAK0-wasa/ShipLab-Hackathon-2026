@@ -822,7 +822,7 @@
   function canResume(snap) {
     const st = snap.state.main || {};
     const ck = st.ck;
-    if (!ck || st.phase !== 'collecting' || ck.round !== st.round || !Object.keys(snap.cand).length) return false;
+    if (!ck || (st.phase !== 'collecting' && st.phase !== 'meeting') || ck.round !== st.round || !Object.keys(snap.cand).length) return false;
     const now0 = Object.keys(snap.brief).filter((id) => snap.member[id]);
     return Array.isArray(ck.participants) && ck.participants.length === now0.length && ck.participants.every((id) => now0.includes(id));
   }
@@ -1104,6 +1104,8 @@
     if (st.runner && t - (st.runnerAt || 0) < LOCK_MS) return null; // だれかが進めている
     const ids = Object.keys(snap.brief).filter((id) => snap.member[id]).sort();
     if (ids.length < 2 || ids.some((id) => snap.brief[id].scrubbed)) return null;
+    // 進めていた端末が途中で閉じられ、進行中の印だけが残った会議は、続きから（記録がなければ最初から）進め直す
+    if (st.phase === 'meeting' && st.runner) return { mode: canResume(snap) ? 'resume' : 'full' };
     if (st.paused && canResume(snap)) return { mode: 'resume' };
     const size = Number(room.teamSize) || 0;
     const due = !!room.deadlineAt && t >= room.deadlineAt;
