@@ -90,6 +90,24 @@ app.whenReady().then(async () => {
     await shot('w4-mobile-room');
     if (over > 2) throw new Error('スマホの幅で横にはみ出している: ' + over + 'px');
 
+    // 会議切り替えを開いても、メニューと操作ボタンが左右に見切れない。
+    for (const width of [320, 390, 486]) {
+      win.setContentSize(width, 780); await sleep(200);
+      await js(`document.querySelector('.swbtn').click()`);
+      const menuFits = await js(`(() => {
+        const menu = document.querySelector('.swmenu');
+        if (!menu) return false;
+        const width = document.documentElement.clientWidth;
+        return document.documentElement.scrollWidth <= width + 2 &&
+          [menu, ...menu.querySelectorAll('button')].every(el => {
+            const r = el.getBoundingClientRect();
+            return r.left >= -1 && r.right <= width + 1;
+          });
+      })()`);
+      if (!menuFits) throw new Error('会議切り替えが画面外にはみ出している: ' + width + 'px');
+      await js(`document.querySelector('.swbtn').click()`);
+    }
+
     // 6. 招待のリンクから開くと、参加の画面にコードが入った状態で出る（別人として開く）
     win.setContentSize(1180, 820);
     await win.loadFile(path.join(__dirname, '..', 'web', 'index.html'), { query: { db: 'none', profile: 'b' }, hash: 'join=' + encodeURIComponent(await js(`document.querySelector('#s-invite') ? document.querySelector('#s-invite').value : ''`) || 'K7M29QXD') });

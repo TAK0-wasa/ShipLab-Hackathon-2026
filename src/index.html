@@ -405,6 +405,15 @@
     .rec { padding: 20px 16px; }
     .rec .big { font-size: 26px; }
   }
+  /* 会議切り替えメニューをスマホの画面幅に収める */
+  @media (max-width: 820px) {
+    #switch { flex: 1 1 180px; min-width: 0; max-width: 100%; }
+    .swbtn { width: 100%; max-width: 100%; }
+    .swname { min-width: 0; }
+    .swmenu { left: auto; right: 0; width: min(340px, calc(100vw - 28px)); }
+    .swfoot { flex-wrap: wrap; }
+    .swfoot .btn { flex: 1 1 120px; min-width: 0; white-space: normal; }
+  }
   /* デスクトップ版だけの部品 */
   .whoname { font-weight: 700; color: var(--text); }
   .who .badge { margin-left: 0; }
