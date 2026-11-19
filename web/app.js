@@ -1,4 +1,4 @@
-// MeetForMe Web版 v0.37.3（node web/build.js で作成。直接は書き換えない）
+// MeetForMe Web版 v0.38.1（node web/build.js で作成。直接は書き換えない）
 (function () { var module = { exports: {} };
 // 見本モード用の「AIの代わり」。APIを呼ばずに、決まった形の見本の応答を返す。
 // 画面の流れ（個室 → 預ける → 会議 → 採点 → 推薦 → 承認）を、費用をかけずに確かめるためのもの。
@@ -153,7 +153,7 @@ window.sampleAi = module.exports; })();
 // ・AIは会議のサーバー（Supabase の Edge Function「claude」）経由だけで使う。ClaudeのAPIキーはブラウザに置かない
 /* global sampleAi */
 (function () {
-  const VERSION = '0.37.3';
+  const VERSION = '0.38.1';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const REPO_URL = 'https://github.com/TAK0-wasa/ShipLab-Hackathon-2026';
   // デスクトップ版と同じ接続先（公開してよい種類のキー）。会議の中身は、会議の番号を知っている人しか読み書きできない（supabase_setup.sql）
@@ -1714,6 +1714,26 @@ window.sampleAi = module.exports; })();
     return false;
   }
 
+  // 推薦とは別の案を、人が選び直す。推薦をその案に変えて、これまでの承認は取り消し、選んだ本人だけが承認した状態にする
+  async function adoptOther(ctx, candId) {
+    const snap = await snapshot(ctx.store);
+    const st = snap.state.main;
+    if (!st || st.phase !== 'review' || !st.recommendation) throw new Error('いまは案を選び直せません。');
+    if (st.runner) throw new Error('会議が進んでいる最中は、案を選び直せません。');
+    if (!(st.participants || []).includes(ctx.me.id)) throw new Error('この会議の参加者だけが、案を選び直せます。');
+    const cand = snap.cand[candId];
+    if (!cand || cand.dropped) throw new Error('この案は選べません。');
+    const rec0 = st.recommendation;
+    if (rec0.topId === candId) return approve(ctx);
+    const prev = snap.cand[rec0.topId];
+    const name = (snap.member[ctx.me.id] || {}).name || ctx.me.name || '誰か';
+    const rec = { ...rec0, topId: candId, runnerUpId: rec0.topId, tie: false, unstable: false, conflict: '', pickedBy: ctx.me.id, reason: `${name}さんが、推薦案「${prev ? prev.title : ''}」からこの案に選び直しました。（元の推薦の理由：${rec0.reason || ''}）` };
+    await ctx.store.put('state', 'main', { ...st, recommendation: rec });
+    for (const id of st.participants || []) await ctx.store.put('approval', id, { round: -1, ok: false, at: now(), reset: true });
+    await ctx.store.put('msg', uid('g'), { round: st.round, at: now(), speaker: 'system', speakerName: 'システム', type: 'system', text: `${name}さんが、推薦を「${cand.title}」に選び直しました。承認はやり直しです。ほかの人は、この案を見て承認するか、一言返してください。` });
+    return approve(ctx);
+  }
+
   function publicContext(snap) {
     const cands = activeCands(snap);
     if (!cands.length) return '';
@@ -1760,6 +1780,7 @@ window.sampleAi = module.exports; })();
     addUpdate,
     answerQuestion,
     approve,
+    adoptOther,
     publicContext,
   };
 });
@@ -2281,6 +2302,25 @@ window.sampleAi = module.exports; })();
         startMeeting('rerun');
       }
     });
+  }
+
+  // 推薦とは別の案を、この案に選び直す（承認はやり直し）
+  function adoptCand(c) {
+    S.wantConfirm = '';
+    run('meeting', async () => {
+      await Engine.adoptOther(ctx(), c.id);
+      S.tab = 'meeting';
+      S.notice = `「${c.title}」を採用案に選びました。ほかの人の承認を待っています。`;
+    });
+  }
+  // 推薦以外で、選べる案
+  function otherPickable() {
+    const snap = S.snap;
+    const st = state();
+    const rec = st.recommendation;
+    if (!rec || st.phase !== 'review' || !(st.participants || []).includes(S.cfg.memberId)) return [];
+    const table = Object.fromEntries((rec.table || []).map((t) => [t.candId, t]));
+    return Object.values(snap.cand).filter((c) => c.id !== rec.topId && !c.dropped && !(table[c.id] && table[c.id].excluded) && table[c.id]);
   }
 
   // 推薦とは別の案にしたいとき：その案を推すと代理人に伝えて、議論をやり直す
@@ -3442,7 +3482,10 @@ window.sampleAi = module.exports; })();
                           h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', onclick: () => { S.open.say = false; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy || running, onclick: () => tellAgent('comment') }, '代理人に伝えて議論をやり直す'))
                         )
                       : h('button', { class: 'btn ghost block', disabled: !!S.busy || running, onclick: () => { S.open.say = true; render(); } }, '承認せず、一言返す'),
-                    h('div', { class: 'hint', style: 'margin-top:6px' }, '別の案にしたいときは、下の「案の一覧」でその案を開いて、「この案にしたい」を押してください。'),
+                    h('div', { class: 'hint', style: 'margin-top:10px' }, '別の案にしたいとき：'),
+                    ...otherPickable().map((c) => (S.wantConfirm === c.id + ':side'
+                      ? h('div', { class: 'q', style: 'margin-top:6px' }, h('p', {}, `推薦を「${c.title}」に変えます。これまでの承認はやり直しになります。`), h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', onclick: () => { S.wantConfirm = ''; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => adoptCand(c) }, '採用する')))
+                      : h('button', { class: 'btn ghost block', style: 'margin-top:6px;text-align:left', disabled: !!S.busy || running, onclick: () => { S.wantConfirm = c.id + ':side'; render(); } }, `「${c.title}」を採用する`))),
                   ]
                 : null,
               approvalRow(st),
@@ -3492,9 +3535,9 @@ window.sampleAi = module.exports; })();
           (() => {
             const ok = st.phase === 'review' && (st.participants || []).includes(S.cfg.memberId) && c.id !== (rec && rec.topId) && !c.dropped && !(t && t.excluded) && !isRunning();
             if (!ok) return null;
-            return S.wantConfirm === c.id
-              ? h('div', { class: 'row end', style: 'margin-top:10px;align-items:center' }, h('span', { class: 'hint', style: 'flex:1' }, `「${c.title}」を推すと代理人に伝えて、議論をやり直します。`), h('button', { class: 'btn ghost small', onclick: () => { S.wantConfirm = ''; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => wantCand(c) }, '伝えてやり直す'))
-              : h('div', { class: 'row end', style: 'margin-top:10px' }, h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => { S.wantConfirm = c.id; render(); } }, 'この案にしたい'));
+            if (S.wantConfirm === c.id + ':adopt') return h('div', { class: 'row end', style: 'margin-top:10px;align-items:center' }, h('span', { class: 'hint', style: 'flex:1' }, `推薦を「${c.title}」に変えます。これまでの承認はやり直しになります。`), h('button', { class: 'btn ghost small', onclick: () => { S.wantConfirm = ''; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => adoptCand(c) }, 'この案を採用する'));
+            if (S.wantConfirm === c.id) return h('div', { class: 'row end', style: 'margin-top:10px;align-items:center' }, h('span', { class: 'hint', style: 'flex:1' }, `「${c.title}」を推すと代理人に伝えて、議論をやり直します。`), h('button', { class: 'btn ghost small', onclick: () => { S.wantConfirm = ''; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => wantCand(c) }, '伝えてやり直す'));
+            return h('div', { class: 'row end', style: 'margin-top:10px' }, h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { S.wantConfirm = c.id; render(); } }, 'この案で議論をやり直す'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => { S.wantConfirm = c.id + ':adopt'; render(); } }, 'この案を採用する'));
           })(),
           t && t.marks && t.marks.length
             ? h('div', { class: 'fit' }, h('b', {}, '評価基準ごとの採点（進行役AI）'), h('div', { class: 'marks' + (t.marks.some((m) => m.note) ? ' rows' : '') }, t.marks.map((m) => h('div', { class: 'mkrow' }, h('span', { class: 'mk s' + Math.round(m.score) }, `${m.name}${m.weight !== 1 ? ' ×' + m.weight : ''}：${m.score}/5`), m.spread ? h('span', { class: 'mkspread', title: '2回採点した結果に差がありました。平均を使っています' }, `2回の差 ${m.spread}`) : null, m.note ? h('span', { class: 'mknote' }, m.note) : null))), t.comment ? h('div', { class: 'hint' }, t.comment) : null)
@@ -4086,6 +4129,7 @@ window.sampleAi = module.exports; })();
     const el = $('status');
     el.className = '';
     el.replaceChildren();
+    if (!S.notice) S.noticeShown = '';
     const err = S.error || S.netError;
     if (S.busy && (S.progress || S.busy === 'meeting')) {
       el.className = 'show';
@@ -4096,6 +4140,18 @@ window.sampleAi = module.exports; })();
     } else if (S.notice) {
       el.className = 'show';
       el.append(h('span', {}, S.notice), h('button', { class: 'btn ghost small', onclick: () => { S.notice = ''; renderStatus(); } }, '閉じる'));
+      // お知らせは、しばらくしたら自動で消す（あとからベルマークの一覧で見られる）。同じお知らせの描き直しでは、時間を数え直さない
+      if (S.noticeShown !== S.notice) {
+        S.noticeShown = S.notice;
+        clearTimeout(S.noticeTimer);
+        const shown = S.notice;
+        S.noticeTimer = setTimeout(() => {
+          if (S.notice === shown) {
+            S.notice = '';
+            renderStatus();
+          }
+        }, 10000);
+      }
     }
   }
 

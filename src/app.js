@@ -516,6 +516,25 @@
     });
   }
 
+  // 推薦とは別の案を、この案に選び直す（承認はやり直し）
+  function adoptCand(c) {
+    S.wantConfirm = '';
+    run('meeting', async () => {
+      await Engine.adoptOther(ctx(), c.id);
+      S.tab = 'meeting';
+      S.notice = `「${c.title}」を採用案に選びました。ほかの人の承認を待っています。`;
+    });
+  }
+  // 推薦以外で、選べる案
+  function otherPickable() {
+    const snap = S.snap;
+    const st = state();
+    const rec = st.recommendation;
+    if (!rec || st.phase !== 'review' || !(st.participants || []).includes(S.cfg.memberId)) return [];
+    const table = Object.fromEntries((rec.table || []).map((t) => [t.candId, t]));
+    return Object.values(snap.cand).filter((c) => c.id !== rec.topId && !c.dropped && !(table[c.id] && table[c.id].excluded) && table[c.id]);
+  }
+
   // 推薦とは別の案にしたいとき：その案を推すと代理人に伝えて、議論をやり直す
   function wantCand(c) {
     S.wantConfirm = '';
@@ -1675,7 +1694,10 @@
                           h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', onclick: () => { S.open.say = false; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy || running, onclick: () => tellAgent('comment') }, '代理人に伝えて議論をやり直す'))
                         )
                       : h('button', { class: 'btn ghost block', disabled: !!S.busy || running, onclick: () => { S.open.say = true; render(); } }, '承認せず、一言返す'),
-                    h('div', { class: 'hint', style: 'margin-top:6px' }, '別の案にしたいときは、下の「案の一覧」でその案を開いて、「この案にしたい」を押してください。'),
+                    h('div', { class: 'hint', style: 'margin-top:10px' }, '別の案にしたいとき：'),
+                    ...otherPickable().map((c) => (S.wantConfirm === c.id + ':side'
+                      ? h('div', { class: 'q', style: 'margin-top:6px' }, h('p', {}, `推薦を「${c.title}」に変えます。これまでの承認はやり直しになります。`), h('div', { class: 'row end' }, h('button', { class: 'btn ghost small', onclick: () => { S.wantConfirm = ''; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => adoptCand(c) }, '採用する')))
+                      : h('button', { class: 'btn ghost block', style: 'margin-top:6px;text-align:left', disabled: !!S.busy || running, onclick: () => { S.wantConfirm = c.id + ':side'; render(); } }, `「${c.title}」を採用する`))),
                   ]
                 : null,
               approvalRow(st),
@@ -1725,9 +1747,9 @@
           (() => {
             const ok = st.phase === 'review' && (st.participants || []).includes(S.cfg.memberId) && c.id !== (rec && rec.topId) && !c.dropped && !(t && t.excluded) && !isRunning();
             if (!ok) return null;
-            return S.wantConfirm === c.id
-              ? h('div', { class: 'row end', style: 'margin-top:10px;align-items:center' }, h('span', { class: 'hint', style: 'flex:1' }, `「${c.title}」を推すと代理人に伝えて、議論をやり直します。`), h('button', { class: 'btn ghost small', onclick: () => { S.wantConfirm = ''; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => wantCand(c) }, '伝えてやり直す'))
-              : h('div', { class: 'row end', style: 'margin-top:10px' }, h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => { S.wantConfirm = c.id; render(); } }, 'この案にしたい'));
+            if (S.wantConfirm === c.id + ':adopt') return h('div', { class: 'row end', style: 'margin-top:10px;align-items:center' }, h('span', { class: 'hint', style: 'flex:1' }, `推薦を「${c.title}」に変えます。これまでの承認はやり直しになります。`), h('button', { class: 'btn ghost small', onclick: () => { S.wantConfirm = ''; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => adoptCand(c) }, 'この案を採用する'));
+            if (S.wantConfirm === c.id) return h('div', { class: 'row end', style: 'margin-top:10px;align-items:center' }, h('span', { class: 'hint', style: 'flex:1' }, `「${c.title}」を推すと代理人に伝えて、議論をやり直します。`), h('button', { class: 'btn ghost small', onclick: () => { S.wantConfirm = ''; render(); } }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => wantCand(c) }, '伝えてやり直す'));
+            return h('div', { class: 'row end', style: 'margin-top:10px' }, h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { S.wantConfirm = c.id; render(); } }, 'この案で議論をやり直す'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => { S.wantConfirm = c.id + ':adopt'; render(); } }, 'この案を採用する'));
           })(),
           t && t.marks && t.marks.length
             ? h('div', { class: 'fit' }, h('b', {}, '評価基準ごとの採点（進行役AI）'), h('div', { class: 'marks' + (t.marks.some((m) => m.note) ? ' rows' : '') }, t.marks.map((m) => h('div', { class: 'mkrow' }, h('span', { class: 'mk s' + Math.round(m.score) }, `${m.name}${m.weight !== 1 ? ' ×' + m.weight : ''}：${m.score}/5`), m.spread ? h('span', { class: 'mkspread', title: '2回採点した結果に差がありました。平均を使っています' }, `2回の差 ${m.spread}`) : null, m.note ? h('span', { class: 'mknote' }, m.note) : null))), t.comment ? h('div', { class: 'hint' }, t.comment) : null)
@@ -2319,6 +2341,7 @@
     const el = $('status');
     el.className = '';
     el.replaceChildren();
+    if (!S.notice) S.noticeShown = '';
     const err = S.error || S.netError;
     if (S.busy && (S.progress || S.busy === 'meeting')) {
       el.className = 'show';
@@ -2329,6 +2352,18 @@
     } else if (S.notice) {
       el.className = 'show';
       el.append(h('span', {}, S.notice), h('button', { class: 'btn ghost small', onclick: () => { S.notice = ''; renderStatus(); } }, '閉じる'));
+      // お知らせは、しばらくしたら自動で消す（あとからベルマークの一覧で見られる）。同じお知らせの描き直しでは、時間を数え直さない
+      if (S.noticeShown !== S.notice) {
+        S.noticeShown = S.notice;
+        clearTimeout(S.noticeTimer);
+        const shown = S.notice;
+        S.noticeTimer = setTimeout(() => {
+          if (S.notice === shown) {
+            S.notice = '';
+            renderStatus();
+          }
+        }, 10000);
+      }
     }
   }
 
