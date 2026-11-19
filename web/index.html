@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<!-- MeetForMe Web版 v0.38.8（node web/build.js で作成。直接は書き換えない） -->
+<!-- MeetForMe Web版 v0.39.2（node web/build.js で作成。直接は書き換えない） -->
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https:; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -265,6 +265,7 @@
   .choice { display: flex; flex-direction: column; gap: 12px; margin: 0; }
   .choice .btn { margin-top: auto; align-self: flex-start; }
   @media (max-width: 720px) { .choices { grid-template-columns: 1fr; } }
+  .loginrow { display:flex; align-items:center; justify-content:center; gap:12px; flex-wrap:wrap; margin:16px 0 4px; color:var(--muted,#667); font-size:14px; }
   ul.plain { margin: 6px 0; padding-left: 1.2em; line-height: 1.7; }
   .waitcard { border-color: var(--teal); }
   .whead { display: flex; gap: 12px; align-items: center; }
@@ -532,6 +533,6 @@
 <div id="status"></div>
 <div id="turn"></div>
 <div id="main"><main id="view"></main></div>
-<script src="app.js?v=0.38.8"></script>
+<script src="app.js?v=0.39.2"></script>
 </body>
 </html>

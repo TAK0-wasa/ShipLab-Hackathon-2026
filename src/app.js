@@ -63,12 +63,12 @@
     return !!(st.runner && Date.now() - (st.runnerAt || 0) < Engine.LOCK_MS);
   };
   // 自分がいまやること（あなたの番）
-  function todosOf(snap) {
+  function todosOf(snap, meId) {
     const out = [];
     if (!snap) return out;
     const st = snap.state.main || { phase: 'collecting', round: 0 };
     const running = !!(st.runner && Date.now() - (st.runnerAt || 0) < Engine.LOCK_MS);
-    const me = S.cfg.memberId;
+    const me = meId || S.cfg.memberId;
     const others = Object.keys(snap.brief).filter((id) => id !== me && snap.member[id]).length;
     if (!snap.brief[me] && st.phase !== 'decided') {
       out.push({ key: 'deposit', urgent: others > 0, tab: 'room', target: '', text: others ? `ほかの${others}人は預け済みです。「① 考えを預ける」であなたの考えを預けてください。` : '「① 考えを預ける」で代理人に考えを預けてください。' });
@@ -187,7 +187,7 @@
       try {
         const docs = await api.peekRoom(r.room);
         const snap = await Engine.snapshot({ all: async () => docs });
-        const urgent = todosOf(snap).filter((t) => t.urgent);
+        const urgent = todosOf(snap, r.memberId).filter((t) => t.urgent);
         const prev = S.peek[r.room];
         const keys = urgent.map((t) => t.key).join('|');
         if (prev && keys && keys !== prev.keys) {
@@ -247,7 +247,7 @@
             cur ? h('span', { class: 'hint' }, '表示中') : null
           );
         }),
-        h('div', { class: 'swfoot' }, h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => open('create') }, '新しい会議を作る'), h('button', { class: 'btn small ghost', disabled: !!S.busy, onclick: () => open('join') }, '招待コードで参加する'))
+        h('div', { class: 'swfoot' }, h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => open('create') }, '新しい会議を作る'), h('button', { class: 'btn small ghost', disabled: !!S.busy, onclick: () => open('join') }, '招待コードで参加する'), window.WEB ? h('button', { class: 'btn small ghost', disabled: !!S.busy, onclick: () => open('login') }, '別の会議にログイン') : null)
       )
     );
   }
@@ -342,7 +342,6 @@
     }
     if (!o || !o.r || !o.m || !o.k) return fail('引き継ぎのリンクを読めませんでした。もう一度、元の端末でリンクを作り直してください。');
     if (!window.WEB) return fail('引き継ぎのリンクは、ブラウザ（Web版）で開いてください。');
-    if ((S.cfg.rooms || []).length && S.cfg.memberId !== o.m) return fail('このブラウザは、すでに別の人として会議に参加しています。引き継ぐには、別のブラウザで開くか、先に「設定・招待」の「この端末のデータを消す」を行ってください。');
     const db = o.u !== undefined ? { url: o.u, key: o.s || '' } : S.cfg.dbDefault || { url: '', key: '' };
     S.cfg = await api.saveConfig({ memberId: o.m, name: o.n || S.cfg.name || '', room: o.r, supabaseUrl: db.url, supabaseKey: db.key });
     const cur = (await api.getPrivate(o.r)) || {};
@@ -465,6 +464,19 @@
       S.priv.pendingBrief = await Engine.extractBrief(api.llm, S.cfg.name, S.priv.chat);
       await savePriv();
     });
+  }
+
+  // 別の案もこの会議に預ける。いまの案は残したまま、代理人にもう1つの案を話し、あとでまとめて預け直す
+  async function addIdea() {
+    if (S.busy) return;
+    delete S.priv.pendingBrief;
+    S.edit = null;
+    S.priv.choices = [];
+    S.priv.chat.push({ role: 'assistant', content: 'もう1つ、別の案も預けられます。いまの案はそのまま残します。追加したい案を、名前と一言で教えてください。話し終えたら「預ける内容を確認する」で、2つの案をまとめて預けます。' });
+    await savePriv();
+    S.tab = 'room';
+    render();
+    setTimeout(() => { const b = $('chatInput'); if (b) b.focus(); }, 50);
   }
 
   function confirmDeposit() {
@@ -1036,6 +1048,7 @@
             'div',
             { class: 'row end' },
             h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: () => { delete S.priv.pendingBrief; savePriv(); render(); } }, 'やめる'),
+            h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: addIdea }, '別の案も足す'),
             h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: () => openEdit('pending') }, '手直しする'),
             h('button', { class: 'btn', disabled: !!S.busy, onclick: confirmDeposit }, 'この内容で預ける')
           )
@@ -1055,6 +1068,7 @@
           h(
             'div',
             { class: 'row end' },
+            canAI() ? h('button', { class: 'btn small', disabled: !!S.busy, onclick: addIdea }, '別の案も預ける') : null,
             canAI() ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: makeBrief }, '会話から作り直して預け直す') : h('span', { class: 'hint' }, '案そのものを変えるときは、上の「手直しする」か、左のフォームを直して「内容を確認する」を押してください。'),
             h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => tellAgent('tell') }, '伝えて議論をやり直す')
           )
@@ -2037,6 +2051,33 @@
         )
       );
     }
+    if (S.startMode === 'login') {
+      const doLogin = async () => {
+        const raw = val('l-link').trim();
+        const m = /[#&]?take=([^&\s]+)/.exec(raw);
+        const code = m ? decodeURIComponent(m[1]) : raw;
+        if (!code) return fail('ログイン用のリンクを貼り付けてください。');
+        S.error = '';
+        try {
+          await takeOver(code);
+        } catch (e) {
+          S.error = 'ログインに失敗しました。（' + errText(e) + '）';
+        }
+        render();
+      };
+      return h(
+        'div',
+        { class: 'wrap' },
+        h(
+          'div',
+          { class: 'card' },
+          h('h2', {}, 'ログイン（続きから入る）'),
+          h('div', { class: 'hint' }, 'すでに会議に参加している人が、別の端末やブラウザで同じ人として入り直すための画面です。パスワードはありません。かわりに、前の端末で作った「引き継ぎリンク」を使います。'),
+          field('l-link', '引き継ぎリンク', { placeholder: 'https://…/#take=…（貼り付け）', autocomplete: 'off', spellcheck: 'false' }, 'リンクは、前の端末の「設定・招待」→「引き継ぎリンクを作る」で作れます。本人だけに送ってください。'),
+          h('div', { class: 'row end', style: 'margin-top:16px' }, back, h('button', { class: 'btn', onclick: doLogin }, 'ログインする'))
+        )
+      );
+    }
     if (S.startMode === 'join') {
       return h(
         'div',
@@ -2077,6 +2118,7 @@
         h('div', { class: 'card choice' }, h('h2', {}, '会議を作る'), h('div', { class: 'hint' }, '代表者として、テーマ・評価基準・人数を決めて会議を作ります。できた招待コードをメンバーに送ります。'), h('button', { class: 'btn big', onclick: () => { S.startMode = 'create'; render(); } }, '代表者として始める')),
         h('div', { class: 'card choice' }, h('h2', {}, '招待コードで参加する'), h('div', { class: 'hint' }, '代表者から送られてきた招待コードを貼り付けて、会議に参加します。入力は名前と招待コードだけです。'), h('button', { class: 'btn ghost big', onclick: () => { S.startMode = 'join'; render(); } }, 'メンバーとして参加する'))
       ),
+      h('div', { class: 'loginrow' }, h('span', {}, 'すでに参加している人は'), h('button', { class: 'btn ghost', onclick: () => { S.startMode = 'login'; S.error = ''; render(); } }, 'ログイン（続きから）')),
       h('details', { class: 'more startnote' }, h('summary', {}, 'データの扱い（入力した内容がどこへ行くか）'), dataNote())
     );
   }
@@ -2414,6 +2456,7 @@
         !S.cfg.hasApiKey && !S.cfg.demo && S.cfg.serverAi ? h('span', { class: 'badge', title: 'AIは会議のサーバー経由で動きます。このPCにAPIキーは要りません。' }, 'AI：サーバー経由') : null,
         S.cfg.demo && !S.cfg.hasApiKey ? h('span', { class: 'badge warn', title: 'AIの応答は決まった見本です。APIは呼びません。' }, '見本モード') : null,
         ready() ? h('span', { class: 'badge' + (S.cfg.sharedMode === 'supabase' ? '' : ' warn') }, S.cfg.sharedMode === 'supabase' ? '共有中' : 'このPCだけ') : null,
+        ready() && window.WEB ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: async () => { if (!confirm('ログアウトします。この端末の会話と預かりメモは消えます（引き継ぎリンクを作ってあれば、あとでログインして戻せます）。よろしいですか？')) return; try { await api.wipeLocal(); } catch (e) {} location.reload(); } }, 'ログアウト') : null,
         ready() ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { S.tab = 'settings'; S.startMode = ''; render(); $('view').scrollTop = 0; } }, '設定・招待') : null,
         S.cfg.appVersion ? h('span', { class: 'ver', title: 'このアプリのバージョン' }, 'v' + S.cfg.appVersion) : null,
         S.update && S.update.ok && S.update.newer ? h('button', { class: 'btn small upd', id: 'updbtn', title: `新しい版 v${S.update.latest} があります`, onclick: () => window.open(S.update.url, '_blank') }, '新しい版があります') : null,

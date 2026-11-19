@@ -54,6 +54,11 @@
     }
     if (next.room) {
       const hit = rooms.find((r) => r.room === next.room);
+      // 会議ごとに「その会議での自分」を覚える。別の会議へ切り替えたら、その会議での自分（ID・名前）に戻す
+      if (hit && hit.memberId && rest.room !== undefined && rest.room !== cur.room && rest.memberId === undefined) {
+        next.memberId = hit.memberId;
+        if (hit.name) next.name = hit.name;
+      }
       if (hit && rest.supabaseUrl === undefined) {
         next.supabaseUrl = hit.supabaseUrl || '';
         next.supabaseKey = hit.supabaseKey || '';
@@ -64,6 +69,11 @@
         rooms.push({ room: next.room, supabaseUrl: next.supabaseUrl || '', supabaseKey: next.supabaseKey || '', title: '', joinedAt: Date.now() });
       }
       if (roomTitle !== undefined) rooms.find((r) => r.room === next.room).title = String(roomTitle || '').slice(0, 80);
+    }
+    const here = next.room && rooms.find((r) => r.room === next.room);
+    if (here) {
+      here.memberId = next.memberId;
+      here.name = next.name || here.name || '';
     }
     next.rooms = rooms;
     writeJson(K('config'), next);
@@ -130,7 +140,7 @@
     const os = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'その他';
     return {
       ...rest,
-      rooms: (rooms || []).map((r) => ({ room: r.room, title: r.title || '' })),
+      rooms: (rooms || []).map((r) => ({ room: r.room, title: r.title || '', memberId: r.memberId || '' })),
       hasApiKey: false,
       serverAi: serverKnown(cfg),
       serverMeeting: meetKnown(cfg),
