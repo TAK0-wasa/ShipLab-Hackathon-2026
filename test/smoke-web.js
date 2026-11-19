@@ -93,6 +93,16 @@ app.whenReady().then(async () => {
     // 会議切り替えを開いても、メニューと操作ボタンが左右に見切れない。
     for (const width of [320, 390, 486]) {
       win.setContentSize(width, 780); await sleep(200);
+      const headerFits = await js(`(() => {
+        const header = document.querySelector('header');
+        const width = document.documentElement.clientWidth;
+        return header.getBoundingClientRect().height <= 190 &&
+          [...header.querySelectorAll('button')].filter(el => el.getClientRects().length).every(el => {
+            const r = el.getBoundingClientRect();
+            return r.left >= -1 && r.right <= width + 1;
+          });
+      })()`);
+      if (!headerFits) throw new Error('スマホのヘッダーが大きすぎるか、操作が見切れている: ' + width + 'px');
       await js(`document.querySelector('.swbtn').click()`);
       const menuFits = await js(`(() => {
         const menu = document.querySelector('.swmenu');
