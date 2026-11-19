@@ -9,7 +9,7 @@
 - **デモ動画（YouTube）**：https://www.youtube.com/watch?v=5JVYGNUDQA4
 - ShipLab Hackathon 2026（テーマ「かゆいところに手が届くアプリ」）の提出作品です。
 - **チーム**：RememBug Me（3人）
-- **このリポジトリのバージョン**：v0.39.15
+- **このリポジトリのバージョン**：v0.39.16
 
 ## このアプリが生まれた背景
 
