@@ -1,4 +1,4 @@
-// MeetForMe Web版 v0.39.2（node web/build.js で作成。直接は書き換えない）
+// MeetForMe Web版 v0.39.3（node web/build.js で作成。直接は書き換えない）
 (function () { var module = { exports: {} };
 // 見本モード用の「AIの代わり」。APIを呼ばずに、決まった形の見本の応答を返す。
 // 画面の流れ（個室 → 預ける → 会議 → 採点 → 推薦 → 承認）を、費用をかけずに確かめるためのもの。
@@ -153,7 +153,7 @@ window.sampleAi = module.exports; })();
 // ・AIは会議のサーバー（Supabase の Edge Function「claude」）経由だけで使う。ClaudeのAPIキーはブラウザに置かない
 /* global sampleAi */
 (function () {
-  const VERSION = '0.39.2';
+  const VERSION = '0.39.3';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const REPO_URL = 'https://github.com/TAK0-wasa/ShipLab-Hackathon-2026';
   // デスクトップ版と同じ接続先（公開してよい種類のキー）。会議の中身は、会議の番号を知っている人しか読み書きできない（supabase_setup.sql）
@@ -4116,7 +4116,7 @@ window.sampleAi = module.exports; })();
       S.showData ? dataNote() : null,
       h('h3', { style: 'margin-top:18px' }, 'この端末のデータを消す'),
       h('div', { class: 'hint' }, 'この端末に保存した名前、参加している会議の一覧、代理人との会話、自分のAPIキーを消して、最初の状態に戻します。共有の保存先にある会議のデータは消えません（消すには、代表者が「この会議のデータをすべて削除する」を使います）。'),
-      h('div', { class: 'row', style: 'margin-top:8px' }, confirmBtn('wipe', 'この端末のデータを消す', '本当に消す', wipe))
+      h('div', { class: 'row', style: 'margin-top:8px' }, confirmBtn('wipe', window.WEB ? 'ログアウト（この端末のデータを消す）' : 'この端末のデータを消す', '本当に消す', wipe))
     );
 
     const leave = async (force) => {
@@ -4254,7 +4254,6 @@ window.sampleAi = module.exports; })();
         !S.cfg.hasApiKey && !S.cfg.demo && S.cfg.serverAi ? h('span', { class: 'badge', title: 'AIは会議のサーバー経由で動きます。この端末にAPIキーは要りません。' }, 'AI：サーバー経由') : null,
         S.cfg.demo && !S.cfg.hasApiKey ? h('span', { class: 'badge warn', title: 'AIの応答は決まった見本です。APIは呼びません。' }, '見本モード') : null,
         ready() ? h('span', { class: 'badge' + (S.cfg.sharedMode === 'supabase' ? '' : ' warn') }, S.cfg.sharedMode === 'supabase' ? '共有中' : 'この端末だけ') : null,
-        ready() && window.WEB ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: async () => { if (!confirm('ログアウトします。この端末の会話と預かりメモは消えます（引き継ぎリンクを作ってあれば、あとでログインして戻せます）。よろしいですか？')) return; try { await api.wipeLocal(); } catch (e) {} location.reload(); } }, 'ログアウト') : null,
         ready() ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { S.tab = 'settings'; S.startMode = ''; render(); $('view').scrollTop = 0; } }, '設定・招待') : null,
         S.cfg.appVersion ? h('span', { class: 'ver', title: 'このアプリのバージョン' }, 'v' + S.cfg.appVersion) : null,
         S.update && S.update.ok && S.update.newer ? h('button', { class: 'btn small upd', id: 'updbtn', title: `新しい版 v${S.update.latest} があります`, onclick: () => window.open(S.update.url, '_blank') }, '新しい版があります') : null,

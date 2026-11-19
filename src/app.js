@@ -2318,7 +2318,7 @@
       S.showData ? dataNote() : null,
       h('h3', { style: 'margin-top:18px' }, 'このPCのデータを消す'),
       h('div', { class: 'hint' }, 'このPCに保存した名前、参加している会議の一覧、代理人との会話、自分のAPIキーを消して、最初の状態に戻します。共有の保存先にある会議のデータは消えません（消すには、代表者が「この会議のデータをすべて削除する」を使います）。'),
-      h('div', { class: 'row', style: 'margin-top:8px' }, confirmBtn('wipe', 'このPCのデータを消す', '本当に消す', wipe))
+      h('div', { class: 'row', style: 'margin-top:8px' }, confirmBtn('wipe', window.WEB ? 'ログアウト（この端末のデータを消す）' : 'このPCのデータを消す', '本当に消す', wipe))
     );
 
     const leave = async (force) => {
@@ -2456,7 +2456,6 @@
         !S.cfg.hasApiKey && !S.cfg.demo && S.cfg.serverAi ? h('span', { class: 'badge', title: 'AIは会議のサーバー経由で動きます。このPCにAPIキーは要りません。' }, 'AI：サーバー経由') : null,
         S.cfg.demo && !S.cfg.hasApiKey ? h('span', { class: 'badge warn', title: 'AIの応答は決まった見本です。APIは呼びません。' }, '見本モード') : null,
         ready() ? h('span', { class: 'badge' + (S.cfg.sharedMode === 'supabase' ? '' : ' warn') }, S.cfg.sharedMode === 'supabase' ? '共有中' : 'このPCだけ') : null,
-        ready() && window.WEB ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: async () => { if (!confirm('ログアウトします。この端末の会話と預かりメモは消えます（引き継ぎリンクを作ってあれば、あとでログインして戻せます）。よろしいですか？')) return; try { await api.wipeLocal(); } catch (e) {} location.reload(); } }, 'ログアウト') : null,
         ready() ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { S.tab = 'settings'; S.startMode = ''; render(); $('view').scrollTop = 0; } }, '設定・招待') : null,
         S.cfg.appVersion ? h('span', { class: 'ver', title: 'このアプリのバージョン' }, 'v' + S.cfg.appVersion) : null,
         S.update && S.update.ok && S.update.newer ? h('button', { class: 'btn small upd', id: 'updbtn', title: `新しい版 v${S.update.latest} があります`, onclick: () => window.open(S.update.url, '_blank') }, '新しい版があります') : null,
