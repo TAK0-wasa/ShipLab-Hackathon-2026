@@ -472,7 +472,8 @@
     delete S.priv.pendingBrief;
     S.edit = null;
     S.priv.choices = [];
-    S.priv.chat.push({ role: 'assistant', content: '別の案を追加しますね。いま預けている案は、そのまま残ります。追加したい案の「名前」と「どんな案か」を、一言で教えてください。話し終えたら、右の「預ける内容を確認する」を押すと、2つの案をまとめて預け直せます。' });
+    S.priv.addingIdea = true;
+    S.priv.chat.push({ role: 'assistant', content: '別の案を追加しますね。いま預けている案は、そのまま残ります。追加したい案の「名前」と「どんな案か」を、一言で教えてください。話し終えたら、「預ける内容を確認する」を押すと、いまの案と合わせて、まとめて預け直せます。（ボタンは、入力欄のすぐ上に出ます）' });
     await savePriv();
     S.tab = 'room';
     render();
@@ -487,6 +488,7 @@
       await api.store.put('member', S.cfg.memberId, { ...(S.snap.member[S.cfg.memberId] || {}), name: S.cfg.name, deposited: true, depositedAt: Date.now() });
       S.priv.brief = brief;
       delete S.priv.pendingBrief;
+      delete S.priv.addingIdea;
       await savePriv();
       await refresh();
       const deposited = Object.keys(S.snap.brief).filter((id) => S.snap.member[id]).length;
@@ -989,6 +991,18 @@
         : null,
       h(
         'div',
+        { class: 'composerwrap' },
+      S.priv.addingIdea && S.priv.brief && !S.priv.pendingBrief && !chatBusy
+        ? h(
+            'div',
+            { class: 'addbar' },
+            h('span', { class: 'hint' }, '追加の案を話し終えたら →'),
+            h('button', { class: 'btn', disabled: !!S.busy || !said, onclick: makeBrief }, '預ける内容を確認する'),
+            h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { delete S.priv.addingIdea; savePriv(); render(); } }, 'やめる')
+          )
+        : null,
+      h(
+        'div',
         { class: 'composer' },
         input,
         // 声で入力（デスクトップ版）: Windows の音声入力を起動し、聞き取った文字が入力欄に入る。送信は自分で押す
@@ -1020,6 +1034,7 @@
             )
           : null,
         h('button', { class: 'btn', disabled: !!S.busy, onclick: () => sendChat() }, '送信')
+      )
       )
     );
 
@@ -1060,6 +1075,17 @@
         )
       );
     } else if (S.priv.brief) {
+      if (S.priv.addingIdea && state().phase !== 'decided') {
+        side.append(
+          h(
+            'div',
+            { class: 'card addidea-card' },
+            h('h2', {}, '別の案を追加しています'),
+            h('div', { class: 'hint' }, 'チャットで、追加したい案を代理人に話してください。話し終えたら、下のボタンを押します。いま預けている案は残したまま、まとめて預け直します。'),
+            h('div', { class: 'row', style: 'margin-top:10px;flex-wrap:wrap' }, h('button', { class: 'btn', disabled: !!S.busy, onclick: makeBrief }, '預ける内容を確認する'), h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: () => { delete S.priv.addingIdea; savePriv(); render(); } }, 'やめる'))
+          )
+        );
+      }
       const wc = waitCard(true);
       if (wc) side.append(wc);
       side.append(
@@ -2571,7 +2597,15 @@
     view.replaceChildren(S.startMode || S.tab === 'settings' ? viewSettings() : S.tab === 'meeting' ? viewMeeting() : viewRoom());
     view.scrollTop = keepScroll;
     const msgs = $('msgs');
-    if (msgs) msgs.scrollTop = msgs.scrollHeight;
+    if (msgs) {
+      msgs.scrollTop = msgs.scrollHeight;
+      // スマホでは、チャットの中ではなく画面全体が動く。メッセージが増えたときだけ、いちばん新しい発言まで画面を送る
+      if (window.matchMedia && window.matchMedia('(max-width: 820px)').matches) {
+        const n = msgs.children.length;
+        if (S.msgCount !== undefined && n > S.msgCount && msgs.lastElementChild) msgs.lastElementChild.scrollIntoView({ block: 'center' });
+        S.msgCount = n;
+      }
+    }
     const livelog = $('livelog');
     if (livelog) livelog.scrollTop = livelog.scrollHeight;
   }

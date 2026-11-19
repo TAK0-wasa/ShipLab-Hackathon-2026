@@ -1,4 +1,4 @@
-// MeetForMe Web版 v0.39.7（node web/build.js で作成。直接は書き換えない）
+// MeetForMe Web版 v0.39.9（node web/build.js で作成。直接は書き換えない）
 (function () { var module = { exports: {} };
 // 見本モード用の「AIの代わり」。APIを呼ばずに、決まった形の見本の応答を返す。
 // 画面の流れ（個室 → 預ける → 会議 → 採点 → 推薦 → 承認）を、費用をかけずに確かめるためのもの。
@@ -153,7 +153,7 @@ window.sampleAi = module.exports; })();
 // ・AIは会議のサーバー（Supabase の Edge Function「claude」）経由だけで使う。ClaudeのAPIキーはブラウザに置かない
 /* global sampleAi */
 (function () {
-  const VERSION = '0.39.7';
+  const VERSION = '0.39.9';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const REPO_URL = 'https://github.com/TAK0-wasa/ShipLab-Hackathon-2026';
   // デスクトップ版と同じ接続先（公開してよい種類のキー）。会議の中身は、会議の番号を知っている人しか読み書きできない（supabase_setup.sql）
@@ -2273,7 +2273,8 @@ window.sampleAi = module.exports; })();
     delete S.priv.pendingBrief;
     S.edit = null;
     S.priv.choices = [];
-    S.priv.chat.push({ role: 'assistant', content: '別の案を追加しますね。いま預けている案は、そのまま残ります。追加したい案の「名前」と「どんな案か」を、一言で教えてください。話し終えたら、右の「預ける内容を確認する」を押すと、2つの案をまとめて預け直せます。' });
+    S.priv.addingIdea = true;
+    S.priv.chat.push({ role: 'assistant', content: '別の案を追加しますね。いま預けている案は、そのまま残ります。追加したい案の「名前」と「どんな案か」を、一言で教えてください。話し終えたら、「預ける内容を確認する」を押すと、いまの案と合わせて、まとめて預け直せます。（ボタンは、入力欄のすぐ上に出ます）' });
     await savePriv();
     S.tab = 'room';
     render();
@@ -2288,6 +2289,7 @@ window.sampleAi = module.exports; })();
       await api.store.put('member', S.cfg.memberId, { ...(S.snap.member[S.cfg.memberId] || {}), name: S.cfg.name, deposited: true, depositedAt: Date.now() });
       S.priv.brief = brief;
       delete S.priv.pendingBrief;
+      delete S.priv.addingIdea;
       await savePriv();
       await refresh();
       const deposited = Object.keys(S.snap.brief).filter((id) => S.snap.member[id]).length;
@@ -2790,6 +2792,18 @@ window.sampleAi = module.exports; })();
         : null,
       h(
         'div',
+        { class: 'composerwrap' },
+      S.priv.addingIdea && S.priv.brief && !S.priv.pendingBrief && !chatBusy
+        ? h(
+            'div',
+            { class: 'addbar' },
+            h('span', { class: 'hint' }, '追加の案を話し終えたら →'),
+            h('button', { class: 'btn', disabled: !!S.busy || !said, onclick: makeBrief }, '預ける内容を確認する'),
+            h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => { delete S.priv.addingIdea; savePriv(); render(); } }, 'やめる')
+          )
+        : null,
+      h(
+        'div',
         { class: 'composer' },
         input,
         // 声で入力（デスクトップ版）: Windows の音声入力を起動し、聞き取った文字が入力欄に入る。送信は自分で押す
@@ -2821,6 +2835,7 @@ window.sampleAi = module.exports; })();
             )
           : null,
         h('button', { class: 'btn', disabled: !!S.busy, onclick: () => sendChat() }, '送信')
+      )
       )
     );
 
@@ -2861,6 +2876,17 @@ window.sampleAi = module.exports; })();
         )
       );
     } else if (S.priv.brief) {
+      if (S.priv.addingIdea && state().phase !== 'decided') {
+        side.append(
+          h(
+            'div',
+            { class: 'card addidea-card' },
+            h('h2', {}, '別の案を追加しています'),
+            h('div', { class: 'hint' }, 'チャットで、追加したい案を代理人に話してください。話し終えたら、下のボタンを押します。いま預けている案は残したまま、まとめて預け直します。'),
+            h('div', { class: 'row', style: 'margin-top:10px;flex-wrap:wrap' }, h('button', { class: 'btn', disabled: !!S.busy, onclick: makeBrief }, '預ける内容を確認する'), h('button', { class: 'btn ghost', disabled: !!S.busy, onclick: () => { delete S.priv.addingIdea; savePriv(); render(); } }, 'やめる'))
+          )
+        );
+      }
       const wc = waitCard(true);
       if (wc) side.append(wc);
       side.append(
@@ -4372,7 +4398,15 @@ window.sampleAi = module.exports; })();
     view.replaceChildren(S.startMode || S.tab === 'settings' ? viewSettings() : S.tab === 'meeting' ? viewMeeting() : viewRoom());
     view.scrollTop = keepScroll;
     const msgs = $('msgs');
-    if (msgs) msgs.scrollTop = msgs.scrollHeight;
+    if (msgs) {
+      msgs.scrollTop = msgs.scrollHeight;
+      // スマホでは、チャットの中ではなく画面全体が動く。メッセージが増えたときだけ、いちばん新しい発言まで画面を送る
+      if (window.matchMedia && window.matchMedia('(max-width: 820px)').matches) {
+        const n = msgs.children.length;
+        if (S.msgCount !== undefined && n > S.msgCount && msgs.lastElementChild) msgs.lastElementChild.scrollIntoView({ block: 'center' });
+        S.msgCount = n;
+      }
+    }
     const livelog = $('livelog');
     if (livelog) livelog.scrollTop = livelog.scrollHeight;
   }
