@@ -48,7 +48,7 @@ Deno.serve(async (req) => {
     });
     const allowed = r.ok ? await r.json() : null;
     if (allowed !== true) {
-      return fail(429, r.ok ? "今日のAIの利用回数の上限に達しました（会議ごと1日200回・全体1日1000回）" : "利用回数を確認できませんでした（supabase_setup.sql を実行してください）");
+      return fail(429, r.ok ? "今日のAIの利用回数の上限に達しました（会議ごと1日2000回・全体1日2000回）" : "利用回数を確認できませんでした（supabase_setup.sql を実行してください）");
     }
   } catch {
     return fail(503, "利用回数を確認できませんでした");

@@ -1,4 +1,4 @@
-// MeetForMe Web版 v0.39.9（node web/build.js で作成。直接は書き換えない）
+// MeetForMe Web版 v0.39.12（node web/build.js で作成。直接は書き換えない）
 (function () { var module = { exports: {} };
 // 見本モード用の「AIの代わり」。APIを呼ばずに、決まった形の見本の応答を返す。
 // 画面の流れ（個室 → 預ける → 会議 → 採点 → 推薦 → 承認）を、費用をかけずに確かめるためのもの。
@@ -153,7 +153,7 @@ window.sampleAi = module.exports; })();
 // ・AIは会議のサーバー（Supabase の Edge Function「claude」）経由だけで使う。ClaudeのAPIキーはブラウザに置かない
 /* global sampleAi */
 (function () {
-  const VERSION = '0.39.9';
+  const VERSION = '0.39.12';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const REPO_URL = 'https://github.com/TAK0-wasa/ShipLab-Hackathon-2026';
   // デスクトップ版と同じ接続先（公開してよい種類のキー）。会議の中身は、会議の番号を知っている人しか読み書きできない（supabase_setup.sql）
@@ -2782,8 +2782,12 @@ window.sampleAi = module.exports; })();
       { class: 'chat' },
       h(
         'div',
-        { class: 'chat-head' },
+        { class: 'chat-head withjump' },
         h('div', { class: 'agenthead' }, avatar(S.cfg.memberId), h('div', {}, h('b', {}, `${S.cfg.name}さんの代理人`), h('div', { class: 'hint' }, 'この会話はこの端末にだけ保存されます。預けるのはまとめたメモだけで、本音の部分（好きな点・不安な点・条件）は、ほかのメンバーの画面に出ません。')))
+        ,
+        S.priv.brief || S.priv.pendingBrief
+          ? h('button', { class: 'btn ghost small jumpbrief', title: '預けた内容のところへ移動します', onclick: () => { const el = $('sec-brief') || document.querySelector('#view .side'); if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' }); } }, S.priv.pendingBrief && !S.priv.brief ? '預ける内容へ ↓' : '預け済みの内容へ ↓')
+          : null
       ),
       msgs,
       // 代理人の質問に、押すだけで答えられる選択肢。自分の言葉で書きたいときは下の入力欄を使う
@@ -2861,7 +2865,7 @@ window.sampleAi = module.exports; })();
       side.append(
         h(
           'div',
-          { class: 'card' },
+          { class: 'card', id: 'sec-brief' },
           h('h2', {}, '預ける内容の確認'),
           h('div', { class: 'hint' }, '「本人」はあなたが言ったこと、「AIが補完」は代理人が仮で埋めたところです。違っていたら「手直しする」で直接書き換えられます。「やめる」を押して、代理人とのチャットで言い直すこともできます。'),
           briefView(S.priv.pendingBrief),
@@ -2892,18 +2896,9 @@ window.sampleAi = module.exports; })();
       side.append(
         h(
           'div',
-          { class: 'card' },
+          { class: 'card', id: 'sec-brief' },
           h('div', { class: 'row', style: 'align-items:center' }, h('h2', { style: 'margin:0;flex:1' }, '代理人に預け済み'), state().phase === 'decided' ? null : h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: () => openEdit('saved') }, '手直しする')),
           briefView(S.priv.brief),
-          state().phase === 'decided' || !canAI()
-            ? null
-            : h(
-                'div',
-                { class: 'addidea' },
-                h('b', {}, '別の案も出したいとき'),
-                h('div', { class: 'hint' }, 'いま預けている案は、そのまま残ります。新しい案を代理人に話して、2つ（以上）の案をまとめて預け直せます。' + (isRunning() ? 'いまは会議中です。預けると、この会議が終わったあと、新しい案を入れて自動でやり直します。' : '')),
-                h('button', { class: 'btn', disabled: !!S.busy, onclick: addIdea }, '＋ 別の案を追加する')
-              ),
           h('label', {}, 'やっぱりこう思う（代理人に追加で伝える）'),
           draftArea('tell', { placeholder: '例：実装が間に合うなら、Bさんの案でもいいと思ってきた' }),
           h(
@@ -2912,6 +2907,16 @@ window.sampleAi = module.exports; })();
             canAI() ? h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: makeBrief }, '会話から作り直して預け直す') : h('span', { class: 'hint' }, '案そのものを変えるときは、上の「手直しする」か、左のフォームを直して「内容を確認する」を押してください。'),
             h('button', { class: 'btn small', disabled: !!S.busy, onclick: () => tellAgent('tell') }, '伝えて議論をやり直す')
           )
+          ,
+          state().phase === 'decided' || !canAI()
+            ? null
+            : h(
+                'div',
+                { class: 'addidea' },
+                h('b', {}, '別の案も出したいとき'),
+                h('div', { class: 'hint' }, 'いま預けている案は、そのまま残ります。新しい案を代理人に話して、2つ（以上）の案をまとめて預け直せます。' + (isRunning() ? 'いまは会議中です。預けると、この会議が終わったあと、新しい案を入れて自動でやり直します。' : '')),
+                h('button', { class: 'btn', disabled: !!S.busy, onclick: addIdea }, '＋ 別の案を追加する')
+              )
         )
       );
     } else {
@@ -3493,7 +3498,7 @@ window.sampleAi = module.exports; })();
       lv = 'bad';
       head = '会議が止まっています';
       why = /上限|429/.test(err)
-        ? 'AIの利用回数の上限に達した可能性があります（会議ごと1日200回・全体1日1000回）。しばらく待っても進まないときは、サーバー側の上限を上げる必要があります。'
+        ? 'AIの利用回数の上限に達した可能性があります（会議ごと1日2000回・全体1日2000回）。しばらく待っても進まないときは、サーバー側の上限を上げる必要があります。'
         : /キー|認証|401|403|key/i.test(err)
         ? 'AIの設定（キー・認証）に問題があるようです。'
         : /通信|接続|ネットワーク|fetch|timeout|時間切れ|混雑|502|503|529/i.test(err)

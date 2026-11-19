@@ -9,7 +9,7 @@
 - **デモ動画（YouTube）**：https://www.youtube.com/watch?v=5JVYGNUDQA4
 - ShipLab Hackathon 2026（テーマ「かゆいところに手が届くアプリ」）の提出作品です。
 - **チーム**：RememBug Me（3人）
-- **このリポジトリのバージョン**：v0.39.9
+- **このリポジトリのバージョン**：v0.39.12
 
 ## このアプリが生まれた背景
 
@@ -108,7 +108,7 @@ Supabase
 
 - **アプリ**：HTML・CSS・JavaScript（フレームワークなし）。デスクトップ版は Electron、Web版は静的なファイルを Vercel に置いています。
 - **保存先**：Supabase の Postgres。表は `docs` 1つで、行ごとの制限（`docs_by_room`）により、会議の番号（＝招待コード）を知っている人だけが読み書きできます。
-- **AI**：Claude（既定は `claude-sonnet-5-5`）。Supabase の Edge Function が中継し、会議ごと1日200回・全体1日1000回の上限を付けています。
+- **AI**：Claude（既定は `claude-sonnet-5-5`）。Supabase の Edge Function が中継し、会議ごと1日2000回・全体1日2000回の上限を付けています。
 - **招待コード**：8文字（例：`K7M2-9QXD`。まぎらわしい 0・1・I・O は使いません）。
 
 ## データの扱い

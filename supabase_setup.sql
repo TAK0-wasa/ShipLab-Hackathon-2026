@@ -32,7 +32,7 @@ create table if not exists public.relay_usage (
 alter table public.relay_usage enable row level security;
 revoke all on public.relay_usage from anon, authenticated;
 
--- 1回分を数えて、上限内なら true を返す（会議ごと 1日200回、全体 1日1000回）
+-- 1回分を数えて、上限内なら true を返す（会議ごと 1日2000回、全体 1日2000回）
 create or replace function public.relay_take(p_room text)
 returns boolean
 language plpgsql
@@ -53,7 +53,7 @@ begin
   insert into relay_usage as u (day, scope, calls) values (d, 'room:' || p_room, 1)
     on conflict (day, scope) do update set calls = u.calls + 1
     returning calls into n_room;
-  return n_all <= 1000 and n_room <= 200;
+  return n_all <= 2000 and n_room <= 2000;
 end;
 $$;
 revoke all on function public.relay_take(text) from public;
