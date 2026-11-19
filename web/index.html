@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<!-- MeetForMe Web版 v0.38.1（node web/build.js で作成。直接は書き換えない） -->
+<!-- MeetForMe Web版 v0.38.4（node web/build.js で作成。直接は書き換えない） -->
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https:; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -481,6 +481,7 @@
   .cbar { flex: 1; height: 8px; border-radius: 4px; background: var(--bg, #f2f4fa); overflow: hidden; }
   .cbar i { display: block; height: 100%; border-radius: 4px; background: var(--teal, #2f45c5); }
   .crow.out .cbar i { background: #b8bfd0; }
+  .rowpick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
   .cfeas { font-size: 12.5px; padding: 3px 8px; border-radius: 10px; text-align: center; background: var(--bg, #f2f4fa); color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cfeas.plain { background: none; text-align: left; padding: 0; }
   .cfeas.f-ok { background: #E3F4EC; color: #1F5A3D; }
@@ -501,6 +502,18 @@
   .qlink { border-color: var(--warn, #b4521a); }
   .btn.mic { white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
   .btn.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+  /* 画面の上のバーを薄くして、本文を広く使う */
+  header { padding: 6px 24px; gap: 4px 18px; }
+  header h1.logo { font-size: 20px; }
+  .logo .mark { width: 26px; height: 26px; }
+  .stepb { min-height: 34px; font-size: 14px; }
+  #status, #turn { padding: 5px 24px; font-size: 14px; line-height: 1.5; }
+  #turn b { font-size: 12.5px; padding: 1px 10px; }
+  #status button, #turn button { padding: 3px 12px; font-size: 13px; }
+  @media (min-width: 1100px) { header { flex-wrap: nowrap; } .who { flex-wrap: nowrap; white-space: nowrap; gap: 8px; } }
+  @media (min-width: 1100px) and (max-width: 1499px) { .who .badge:not(.warn) { display: none; } }
+  @media (max-width: 820px) { header { padding: 6px 14px; } #status, #turn { padding: 5px 14px; } }
+  @media (max-height: 760px) { header { padding-top: 4px; padding-bottom: 4px; } #status, #turn { padding-top: 3px; padding-bottom: 3px; } }
 </style>
 </head>
 <body>
@@ -516,6 +529,6 @@
 <div id="status"></div>
 <div id="turn"></div>
 <div id="main"><main id="view"></main></div>
-<script src="app.js?v=0.38.1"></script>
+<script src="app.js?v=0.38.4"></script>
 </body>
 </html>

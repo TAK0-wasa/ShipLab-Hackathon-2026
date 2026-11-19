@@ -1,4 +1,4 @@
-// MeetForMe Web版 v0.38.1（node web/build.js で作成。直接は書き換えない）
+// MeetForMe Web版 v0.38.4（node web/build.js で作成。直接は書き換えない）
 (function () { var module = { exports: {} };
 // 見本モード用の「AIの代わり」。APIを呼ばずに、決まった形の見本の応答を返す。
 // 画面の流れ（個室 → 預ける → 会議 → 採点 → 推薦 → 承認）を、費用をかけずに確かめるためのもの。
@@ -153,7 +153,7 @@ window.sampleAi = module.exports; })();
 // ・AIは会議のサーバー（Supabase の Edge Function「claude」）経由だけで使う。ClaudeのAPIキーはブラウザに置かない
 /* global sampleAi */
 (function () {
-  const VERSION = '0.38.1';
+  const VERSION = '0.38.4';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const REPO_URL = 'https://github.com/TAK0-wasa/ShipLab-Hackathon-2026';
   // デスクトップ版と同じ接続先（公開してよい種類のキー）。会議の中身は、会議の番号を知っている人しか読み書きできない（supabase_setup.sql）
@@ -3571,6 +3571,14 @@ window.sampleAi = module.exports; })();
         const isTop = c.id === (rec && rec.topId);
         const key = 'c:' + c.id;
         S.open = S.open || {};
+        // 一覧の各行から、そのまま「本命にする」を押せるようにする（行の開閉は動かさない）
+        const canPick = st.phase === 'review' && (st.participants || []).includes(S.cfg.memberId) && !isTop && !out && !!t && !isRunning();
+        const stop = (e, f) => { e.preventDefault(); e.stopPropagation(); f(); };
+        const pick = !canPick
+          ? null
+          : S.wantConfirm === c.id + ':row'
+            ? h('div', { class: 'rowpick' }, h('span', { class: 'hint' }, '推薦をこの案に変えます。承認はやり直しです。'), h('button', { class: 'btn ghost small', onclick: (e) => stop(e, () => { S.wantConfirm = ''; render(); }) }, 'やめる'), h('button', { class: 'btn small', disabled: !!S.busy, onclick: (e) => stop(e, () => adoptCand(c)) }, '本命にする（確定）'))
+            : h('div', { class: 'rowpick' }, h('button', { class: 'btn ghost small', disabled: !!S.busy, onclick: (e) => stop(e, () => { S.wantConfirm = c.id + ':row'; render(); }) }, '本命にする'));
         const d = h(
           'details',
           { class: 'crow' + (out ? ' out' : '') + (isTop ? ' top' : ''), open: !!S.open[key] },
@@ -3578,7 +3586,7 @@ window.sampleAi = module.exports; })();
             'summary',
             {},
             h('span', { class: 'cno' }, out ? '—' : total === null ? '・' : String(++no)),
-            h('span', { class: 'cmain' }, h('span', { class: 'cttl' }, c.title, isTop ? h('span', { class: 'tag push' }, '推薦') : null, c.origin === 'merged' ? h('span', { class: 'tag mix' }, '合体案') : null, c.origin === 'ai' ? h('span', { class: 'tag new' }, 'AIの新案') : null, out ? h('span', { class: 'tag out' }, c.dropped ? '本人が取り下げ' : '対象外') : null), h('span', { class: 'cwho' }, who(c))),
+            h('span', { class: 'cmain' }, h('span', { class: 'cttl' }, c.title, isTop ? h('span', { class: 'tag push' }, '推薦') : null, c.origin === 'merged' ? h('span', { class: 'tag mix' }, '合体案') : null, c.origin === 'ai' ? h('span', { class: 'tag new' }, 'AIの新案') : null, out ? h('span', { class: 'tag out' }, c.dropped ? '本人が取り下げ' : '対象外') : null), h('span', { class: 'cwho' }, who(c)), pick),
             total === null ? h('span', { class: 'cscore none' }, c.dropped ? '採点しません' : '採点前') : h('span', { class: 'cscore' }, h('span', { class: 'cbar' }, h('i', { style: `width:${Math.max(0, Math.min(100, total))}%` })), h('b', {}, String(total)), h('small', {}, '点')),
             anyFeas ? h('span', { class: 'cfeas' + (c.feas ? ' f-' + c.feas.verdict : '') }, c.feas ? Engine.FEAS_LABEL[c.feas.verdict] || '—' : out ? '—' : '未調査') : null,
             h('span', { class: 'cchev' }, '')

@@ -1,7 +1,7 @@
 {
   "name": "ai-dairinin-kaigi",
   "productName": "MeetForMe",
-  "version": "0.38.1",
+  "version": "0.38.4",
   "description": "集まらなくても決まる、AI代理会議",
   "main": "main.js",
   "private": true,
