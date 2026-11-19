@@ -1631,6 +1631,90 @@
     );
   }
 
+  // 会議がいま、なぜ進んでいる／止まっているのかを、ひと目で分かるように出す
+  function diagCard() {
+    const snap = S.snap;
+    if (!snap) return null;
+    const st = state();
+    if (st.phase === 'decided') return null;
+    const t = Date.now();
+    const age = (ms) => (ms ? Math.max(0, Math.round((t - ms) / 1000)) : null);
+    const members = Object.keys(snap.member);
+    const dep = Object.keys(snap.brief).filter((id) => snap.member[id]);
+    const size = Math.max(S.teamSize || 0, members.length);
+    const runAge = age(st.runnerAt);
+    const lockS = Math.round(Engine.LOCK_MS / 1000);
+    const running = !!(st.runner && t - (st.runnerAt || 0) < Engine.LOCK_MS);
+    const err = String(st.error || '');
+    const who = st.runner === 'server' ? 'サーバー' : `${st.runnerName || 'ほかのメンバー'}さんのアプリ`;
+    let lv = 'ok', head = '', why = '';
+    if (st.error) {
+      lv = 'bad';
+      head = '会議が止まっています';
+      why = /上限|429/.test(err)
+        ? 'AIの利用回数の上限に達した可能性があります（会議ごと1日200回・全体1日1000回）。しばらく待っても進まないときは、サーバー側の上限を上げる必要があります。'
+        : /キー|認証|401|403|key/i.test(err)
+        ? 'AIの設定（キー・認証）に問題があるようです。'
+        : /通信|接続|ネットワーク|fetch|timeout|時間切れ|混雑|502|503|529/i.test(err)
+        ? '通信の途切れや混雑で止まりました。「続きから再開する」でやり直せます。'
+        : '会議の途中でエラーが出て止まりました。「続きから再開する」を押してください。';
+    } else if (running) {
+      if (runAge !== null && runAge > 90) {
+        lv = 'warn';
+        head = '進行中ですが、更新が止まっています';
+        why = `${who}の進み具合が${runAge}秒前から更新されていません。端末が閉じられた、またはスリープした可能性があります。あと約${Math.max(0, lockS - runAge)}秒で、ほかの人が引き継げます。`;
+      } else {
+        head = '会議が進んでいます';
+        why = `${who}が進めています（最後の更新は${runAge === null ? '—' : runAge + '秒前'}）。${st.runner === 'server' ? 'この画面を閉じても進みます。' : '進めている端末の画面を閉じないでください。'}`;
+      }
+    } else if (st.runner) {
+      lv = 'warn';
+      head = '進行中の印が切れています';
+      why = '進めていた端末が止まったようです。「② 会議と結果」の「続きから再開する」で進められます。';
+    } else if (st.phase === 'collecting') {
+      if (dep.length < 2) {
+        lv = 'warn';
+        head = '預けた人が足りません';
+        why = `会議は、預けた人が2人以上になると始められます（いま${dep.length}人）。`;
+      } else if (dep.length < size && !(roomInfo().deadlineAt && t < roomInfo().deadlineAt) && !roomInfo().deadlineAt) {
+        lv = 'warn';
+        head = `あと${size - dep.length}人の預けを待っています`;
+        why = `人数の設定は${size}人です。実際の人数が少ないときは、「設定・招待」で人数を直すか、預けた人だけで始めてください。`;
+      } else if (dep.length < size) {
+        head = `あと${size - dep.length}人の預けを待っています`;
+        why = '締切の時刻になると、預けた人だけで会議が始まります。';
+      } else if (!canAI() && !S.cfg.serverAi) {
+        lv = 'warn';
+        head = 'この環境ではAIを使えません';
+        why = '全員そろっていますが、この環境からは会議を始められません。サーバー経由のAIが使える環境で開いてください。';
+      } else {
+        head = '全員がそろいました';
+        why = 'まもなく会議が自動で始まります。始まらないときは、代表者の画面を開いてください。';
+      }
+    } else if (st.phase === 'review') {
+      head = '結果を確認する段階です';
+      why = '推薦案を見て、承認するか、別の案を選んでください。';
+    }
+    if (!head) return null;
+    const detail = [
+      `段階: ${({ collecting: '預けを集めている', meeting: '会議中', review: '結果の確認', decided: '決定済み' })[st.phase] || st.phase || '-'} ／ 回: ${st.round || 0}`,
+      `進行役: ${st.runner ? (st.runner === 'server' ? 'サーバー' : st.runnerName || st.runner) : 'なし'}${runAge === null ? '' : `（更新 ${runAge}秒前）`}`,
+      `預け済み: ${dep.length} / ${size}人 ／ 参加者: ${members.length}人`,
+      `進み具合の記録: ${st.ck ? 'あり（続きから再開できます）' : 'なし'}`,
+      `AI: ${S.cfg.hasApiKey ? '自分のキー' : S.cfg.demo ? '見本モード' : S.cfg.serverAi ? 'サーバー経由' : '使えません'}`,
+      `エラー: ${err || 'なし'}`,
+      `版: v${S.cfg.appVersion || ''}`,
+    ];
+    const col = lv === 'bad' ? '#c0392b' : lv === 'warn' ? '#b4521a' : '#2e7d4f';
+    return h(
+      'div',
+      { class: 'card', id: 'sec-diag', style: `border-left:5px solid ${col}` },
+      h('div', { style: `font-weight:700;color:${col}` }, (lv === 'bad' ? '⚠ ' : lv === 'warn' ? '△ ' : '● ') + head),
+      h('div', { class: 'hint', style: 'margin-top:4px' }, why),
+      h('details', { class: 'more', style: 'margin-top:8px' }, h('summary', {}, 'くわしい状態（困ったときに見せてください）'), h('div', { class: 'hint', style: 'margin-top:6px;line-height:1.8' }, detail.map((d) => h('div', {}, d))))
+    );
+  }
+
   function viewMeeting() {
     const snap = S.snap;
     const st = state();
@@ -1643,6 +1727,8 @@
     if (st.phase === 'decided' && snap.cand[st.decidedCandId]) wrap.append(decidedCard(st));
 
     if (running) wrap.append(liveCard(st));
+    const dg = diagCard();
+    if (dg) wrap.append(dg);
     const fc = failCard();
     if (fc) wrap.append(fc);
 
