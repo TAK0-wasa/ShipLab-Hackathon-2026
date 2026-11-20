@@ -1,4 +1,4 @@
-// MeetForMe Web版 v0.39.19（node web/build.js で作成。直接は書き換えない）
+// MeetForMe Web版 v0.39.20（node web/build.js で作成。直接は書き換えない）
 (function () { var module = { exports: {} };
 // 見本モード用の「AIの代わり」。APIを呼ばずに、決まった形の見本の応答を返す。
 // 画面の流れ（個室 → 預ける → 会議 → 採点 → 推薦 → 承認）を、費用をかけずに確かめるためのもの。
@@ -153,7 +153,7 @@ window.sampleAi = module.exports; })();
 // ・AIは会議のサーバー（Supabase の Edge Function「claude」）経由だけで使う。ClaudeのAPIキーはブラウザに置かない
 /* global sampleAi */
 (function () {
-  const VERSION = '0.39.19';
+  const VERSION = '0.39.20';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const REPO_URL = 'https://github.com/TAK0-wasa/ShipLab-Hackathon-2026';
   // デスクトップ版と同じ接続先（公開してよい種類のキー）。会議の中身は、会議の番号を知っている人しか読み書きできない（supabase_setup.sql）
@@ -183,15 +183,21 @@ window.sampleAi = module.exports; })();
   const dbDefault = () => (qs.get('db') === 'none' ? null : BUILTIN_DB);
 
   // ---------- 設定 ----------
+  // 管理者から渡されたAPIキー：このタブの中（sessionStorage）にだけ置く。タブを閉じると消え、localStorage・共有DBには入れない
+  const KEY_SS = 'kawarini:apikey';
+  const getKey = () => { try { return sessionStorage.getItem(KEY_SS) || ''; } catch (e) { return ''; } };
+  const setKey = (v) => { try { if (v) sessionStorage.setItem(KEY_SS, v); else sessionStorage.removeItem(KEY_SS); } catch (e) {} };
   function loadConfig() {
     const raw = readJson(K('config'), {});
-    const cfg = { model: DEFAULT_MODEL, ...raw, apiKey: '' };
+    const cfg = { model: DEFAULT_MODEL, ...raw, apiKey: getKey() };
     cfg.rooms = Array.isArray(raw.rooms) ? raw.rooms.filter((r) => r && r.room) : [];
     return cfg;
   }
   function saveConfigRaw(patch) {
     const cur = loadConfig();
-    const { removeRoom, roomTitle, apiKey, clearApiKey, ...rest } = patch || {}; // APIキーはブラウザに保存しない
+    const { removeRoom, roomTitle, apiKey, clearApiKey, ...rest } = patch || {}; // APIキーは設定ファイルには保存しない（タブの中だけ）
+    if (clearApiKey) setKey('');
+    else if (apiKey) setKey(String(apiKey).trim());
     const next = { ...cur, ...rest };
     delete next.apiKey;
     if (!next.memberId) next.memberId = 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -289,9 +295,9 @@ window.sampleAi = module.exports; })();
     return {
       ...rest,
       rooms: (rooms || []).map((r) => ({ room: r.room, title: r.title || '', memberId: r.memberId || '' })),
-      hasApiKey: false,
+      hasApiKey: !!apiKey,
       serverAi: serverKnown(cfg),
-      serverMeeting: meetKnown(cfg),
+      serverMeeting: !apiKey && meetKnown(cfg),
       dbDefault: dbDefault(),
       demo: !!cfg.demo,
       profile,
@@ -411,12 +417,16 @@ window.sampleAi = module.exports; })();
     if (window.__mockLlm) return window.__mockLlm({ system, messages, maxTokens, search }); // テスト専用
     const cfg = loadConfig();
     if (cfg.demo) return sampleAi({ system, messages }); // 見本モード: AIを呼ばない
-    if (!(await probeServer(cfg))) throw new Error('AIのサーバーが未設定です（この会議ではAIを使えません。代表者に確かめてください）');
+    const ownKey = cfg.apiKey || '';
+    if (!ownKey && !(await probeServer(cfg))) throw new Error('AIのサーバーが未設定です（この会議ではAIを使えません。代表者に確かめてください）');
     let useSearch = !!search && cfg.webSearch !== false;
     const post = async (msgs) => {
       const body = { model: cfg.model || DEFAULT_MODEL, max_tokens: maxTokens || 2000, system, messages: msgs, room: cfg.room };
       if (useSearch) body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }];
-      const res = await net(serverUrl(cfg), { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify(body) });
+      if (ownKey) delete body.room;
+      const res = ownKey
+        ? await net('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ownKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify(body) })
+        : await net(serverUrl(cfg), { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify(body) });
       let data = null;
       try {
         data = await res.json();
@@ -3887,8 +3897,8 @@ window.sampleAi = module.exports; })();
   };
   // 自分のAPIキーと見本モードは、ふだん使わないので設定の「上級者向け」にだけ置く（AIは会議のサーバー経由で動く）
   const aiFields = (prefix) => [
-    window.WEB ? null : field(prefix + 'key', '自分のClaude APIキー', { type: 'password', placeholder: S.cfg.hasApiKey ? '設定済み（変えるときだけ入力）' : 'sk-ant-…（入れなくても動きます）' }, 'サーバー経由のAIが使えないときの予備です。入れると、この端末ではサーバーを通らず、このキーでAIを呼びます。キーはこの端末にだけ暗号化して保存され、ほかのメンバーには送られません。'),
-    S.cfg.hasApiKey ? h('label', { class: 'check' }, h('input', { id: prefix + 'keyoff', type: 'checkbox' }), ' 保存してあるAPIキーを消して、サーバー経由に戻す') : null,
+    field(prefix + 'key', window.WEB ? '管理者のAPIキー（持っている人だけ）' : '自分のClaude APIキー', { type: 'password', autocomplete: 'off', placeholder: S.cfg.hasApiKey ? '設定済み（変えるときだけ入力）' : 'sk-ant-…（入れなくても動きます）' }, window.WEB ? '管理者から渡されたAPIキーを入れると、このタブではサーバーの回数上限を通らず、そのキーでAIを呼びます（会議もこの画面で進めます）。キーはこのタブの中にだけ置き、タブを閉じると消えます。ほかのメンバーや共有データには送られません。キーは他人に見せないでください。' : 'サーバー経由のAIが使えないときの予備です。入れると、この端末ではサーバーを通らず、このキーでAIを呼びます。キーはこの端末にだけ暗号化して保存され、ほかのメンバーには送られません。'),
+    S.cfg.hasApiKey ? h('label', { class: 'check' }, h('input', { id: prefix + 'keyoff', type: 'checkbox' }), window.WEB ? ' 入れたAPIキーを消して、サーバー経由に戻す' : ' 保存してあるAPIキーを消して、サーバー経由に戻す') : null,
     h('label', { class: 'check', style: 'margin-top:14px' }, h('input', { id: prefix + 'demo', type: 'checkbox', checked: !!S.cfg.demo }), ' 見本モード：決まった見本の応答で画面を試す'),
     h('div', { class: 'hint' }, '見本モードの応答は本物のAIではありません。画面の流れを費用なしで確かめるためのものです（自分のAPIキーが入っているときは働きません）。'),
   ];

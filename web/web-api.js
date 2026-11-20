@@ -35,15 +35,21 @@
   const dbDefault = () => (qs.get('db') === 'none' ? null : BUILTIN_DB);
 
   // ---------- 設定 ----------
+  // 管理者から渡されたAPIキー：このタブの中（sessionStorage）にだけ置く。タブを閉じると消え、localStorage・共有DBには入れない
+  const KEY_SS = 'kawarini:apikey';
+  const getKey = () => { try { return sessionStorage.getItem(KEY_SS) || ''; } catch (e) { return ''; } };
+  const setKey = (v) => { try { if (v) sessionStorage.setItem(KEY_SS, v); else sessionStorage.removeItem(KEY_SS); } catch (e) {} };
   function loadConfig() {
     const raw = readJson(K('config'), {});
-    const cfg = { model: DEFAULT_MODEL, ...raw, apiKey: '' };
+    const cfg = { model: DEFAULT_MODEL, ...raw, apiKey: getKey() };
     cfg.rooms = Array.isArray(raw.rooms) ? raw.rooms.filter((r) => r && r.room) : [];
     return cfg;
   }
   function saveConfigRaw(patch) {
     const cur = loadConfig();
-    const { removeRoom, roomTitle, apiKey, clearApiKey, ...rest } = patch || {}; // APIキーはブラウザに保存しない
+    const { removeRoom, roomTitle, apiKey, clearApiKey, ...rest } = patch || {}; // APIキーは設定ファイルには保存しない（タブの中だけ）
+    if (clearApiKey) setKey('');
+    else if (apiKey) setKey(String(apiKey).trim());
     const next = { ...cur, ...rest };
     delete next.apiKey;
     if (!next.memberId) next.memberId = 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -141,9 +147,9 @@
     return {
       ...rest,
       rooms: (rooms || []).map((r) => ({ room: r.room, title: r.title || '', memberId: r.memberId || '' })),
-      hasApiKey: false,
+      hasApiKey: !!apiKey,
       serverAi: serverKnown(cfg),
-      serverMeeting: meetKnown(cfg),
+      serverMeeting: !apiKey && meetKnown(cfg),
       dbDefault: dbDefault(),
       demo: !!cfg.demo,
       profile,
@@ -263,12 +269,16 @@
     if (window.__mockLlm) return window.__mockLlm({ system, messages, maxTokens, search }); // テスト専用
     const cfg = loadConfig();
     if (cfg.demo) return sampleAi({ system, messages }); // 見本モード: AIを呼ばない
-    if (!(await probeServer(cfg))) throw new Error('AIのサーバーが未設定です（この会議ではAIを使えません。代表者に確かめてください）');
+    const ownKey = cfg.apiKey || '';
+    if (!ownKey && !(await probeServer(cfg))) throw new Error('AIのサーバーが未設定です（この会議ではAIを使えません。代表者に確かめてください）');
     let useSearch = !!search && cfg.webSearch !== false;
     const post = async (msgs) => {
       const body = { model: cfg.model || DEFAULT_MODEL, max_tokens: maxTokens || 2000, system, messages: msgs, room: cfg.room };
       if (useSearch) body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }];
-      const res = await net(serverUrl(cfg), { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify(body) });
+      if (ownKey) delete body.room;
+      const res = ownKey
+        ? await net('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ownKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify(body) })
+        : await net(serverUrl(cfg), { method: 'POST', headers: serverHeaders(cfg), body: JSON.stringify(body) });
       let data = null;
       try {
         data = await res.json();

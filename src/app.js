@@ -2086,8 +2086,8 @@
   };
   // 自分のAPIキーと見本モードは、ふだん使わないので設定の「上級者向け」にだけ置く（AIは会議のサーバー経由で動く）
   const aiFields = (prefix) => [
-    window.WEB ? null : field(prefix + 'key', '自分のClaude APIキー', { type: 'password', placeholder: S.cfg.hasApiKey ? '設定済み（変えるときだけ入力）' : 'sk-ant-…（入れなくても動きます）' }, 'サーバー経由のAIが使えないときの予備です。入れると、このPCではサーバーを通らず、このキーでAIを呼びます。キーはこのPCにだけ暗号化して保存され、ほかのメンバーには送られません。'),
-    S.cfg.hasApiKey ? h('label', { class: 'check' }, h('input', { id: prefix + 'keyoff', type: 'checkbox' }), ' 保存してあるAPIキーを消して、サーバー経由に戻す') : null,
+    field(prefix + 'key', window.WEB ? '管理者のAPIキー（持っている人だけ）' : '自分のClaude APIキー', { type: 'password', autocomplete: 'off', placeholder: S.cfg.hasApiKey ? '設定済み（変えるときだけ入力）' : 'sk-ant-…（入れなくても動きます）' }, window.WEB ? '管理者から渡されたAPIキーを入れると、このタブではサーバーの回数上限を通らず、そのキーでAIを呼びます（会議もこの画面で進めます）。キーはこのタブの中にだけ置き、タブを閉じると消えます。ほかのメンバーや共有データには送られません。キーは他人に見せないでください。' : 'サーバー経由のAIが使えないときの予備です。入れると、このPCではサーバーを通らず、このキーでAIを呼びます。キーはこのPCにだけ暗号化して保存され、ほかのメンバーには送られません。'),
+    S.cfg.hasApiKey ? h('label', { class: 'check' }, h('input', { id: prefix + 'keyoff', type: 'checkbox' }), window.WEB ? ' 入れたAPIキーを消して、サーバー経由に戻す' : ' 保存してあるAPIキーを消して、サーバー経由に戻す') : null,
     h('label', { class: 'check', style: 'margin-top:14px' }, h('input', { id: prefix + 'demo', type: 'checkbox', checked: !!S.cfg.demo }), ' 見本モード：決まった見本の応答で画面を試す'),
     h('div', { class: 'hint' }, '見本モードの応答は本物のAIではありません。画面の流れを費用なしで確かめるためのものです（自分のAPIキーが入っているときは働きません）。'),
   ];
